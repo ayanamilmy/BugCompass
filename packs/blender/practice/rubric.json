@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "description": "历史 PR 练习的首版评价规则。诊断质量与资源消耗分开记录，不把相对优先级当作概率。",
+  "quality_dimensions": [
+    {
+      "id": "true_subsystem_in_top3",
+      "label": "前三条路径包含真实子系统",
+      "score": {"0": "完全没有涉及", "1": "涉及上层区域但不够具体", "2": "至少一条路径明确命中真实子系统"}
+    },
+    {
+      "id": "relevant_files_found",
+      "label": "找到真实相关文件",
+      "score": {"0": "没有命中", "1": "命中相邻目录或调用方", "2": "命中至少一个真实修复文件"}
+    },
+    {
+      "id": "valid_evidence",
+      "label": "引用有效证据",
+      "score": {"0": "只有猜测", "1": "有可核对来源但不足以支撑结论", "2": "代码或 Git 证据直接支持路径"}
+    },
+    {
+      "id": "revealing_experiment",
+      "label": "提出能够暴露问题的实验",
+      "score": {"0": "实验无关或不可执行", "1": "能缩小范围", "2": "能区分真实根因与主要竞争假设"}
+    },
+    {
+      "id": "premature_lock_in",
+      "label": "避免过早锁定错误根因",
+      "score": {"0": "在缺乏证据时排除其他路径", "1": "保留替代解释但排序武断", "2": "明确区分事实、推测和未知并随证据调整"}
+    }
+  ],
+  "resource_metrics": [
+    {"id": "elapsed_seconds", "label": "调查总耗时", "unit": "seconds"},
+    {"id": "ai_runs", "label": "AI 运行次数", "unit": "count"}
+  ]
+}

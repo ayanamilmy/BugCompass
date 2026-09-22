@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "case_id", "updated_at", "stage", "summary", "hypotheses", "evidence", "unknowns", "suggested_experiments", "causal_graph", "semantic_diff"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "case_id": {"type": "string"},
+    "updated_at": {"type": "string"},
+    "stage": {"type": "string", "enum": ["intake", "investigating", "paths", "experiment", "conclusion"]},
+    "summary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["problem", "expected_behavior", "actual_behavior", "reproduction_steps", "known_environment", "missing_information"],
+      "properties": {
+        "problem": {"type": "string"}, "expected_behavior": {"type": "string"}, "actual_behavior": {"type": "string"},
+        "reproduction_steps": {"type": "array", "items": {"type": "string"}},
+        "known_environment": {"type": "array", "items": {"type": "string"}},
+        "missing_information": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "hypotheses": {"type": "array", "minItems": 3, "maxItems": 3, "items": {"$ref": "#/$defs/hypothesis"}},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}},
+    "unknowns": {"type": "array", "items": {"$ref": "#/$defs/unknown"}},
+    "suggested_experiments": {"type": "array", "items": {"$ref": "#/$defs/experiment"}},
+    "causal_graph": {
+      "type": "object", "additionalProperties": false, "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": {"type": "array", "items": {"$ref": "#/$defs/causal_node"}},
+        "edges": {"type": "array", "items": {"$ref": "#/$defs/causal_edge"}}
+      }
+    },
+    "semantic_diff": {"$ref": "#/$defs/semantic_diff"}
+  },
+  "$defs": {
+    "reference": {"type": "object", "additionalProperties": false, "required": ["path", "line", "symbol", "note"], "properties": {"path": {"type": "string"}, "line": {"type": ["integer", "null"]}, "symbol": {"type": "string"}, "note": {"type": "string"}}},
+    "hypothesis": {"type": "object", "additionalProperties": false, "required": ["id", "title", "priority", "status", "claim", "basis", "evidence_ids", "source_references", "next_step", "supporting_result", "weakening_result", "risk", "estimated_cost", "user_note"], "properties": {"id": {"type": "string"}, "title": {"type": "string"}, "priority": {"type": "string", "enum": ["high", "medium", "low"]}, "status": {"type": "string", "enum": ["active", "rejected", "supported", "weakened"]}, "claim": {"type": "string"}, "basis": {"type": "array", "items": {"type": "string"}}, "evidence_ids": {"type": "array", "items": {"type": "string"}}, "source_references": {"type": "array", "items": {"$ref": "#/$defs/reference"}}, "next_step": {"type": "string"}, "supporting_result": {"type": "string"}, "weakening_result": {"type": "string"}, "risk": {"type": "string"}, "estimated_cost": {"type": "string", "enum": ["low", "medium", "high"]}, "user_note": {"type": "string"}}},
+    "evidence": {"type": "object", "additionalProperties": false, "required": ["id", "kind", "statement", "source_type", "source_references"], "properties": {"id": {"type": "string"}, "kind": {"type": "string", "enum": ["fact", "inference"]}, "statement": {"type": "string"}, "source_type": {"type": "string", "enum": ["issue", "environment", "source", "git"]}, "source_references": {"type": "array", "items": {"$ref": "#/$defs/reference"}}}},
+    "unknown": {"type": "object", "additionalProperties": false, "required": ["id", "question", "impact"], "properties": {"id": {"type": "string"}, "question": {"type": "string"}, "impact": {"type": "string"}}},
+    "experiment": {"type": "object", "additionalProperties": false, "required": ["id", "hypothesis_id", "title", "purpose", "description", "command", "cwd", "permission", "estimated_seconds", "status", "expected_support", "expected_weakening", "result", "effect", "latest_run", "prediction", "prediction_assessment", "prediction_comparison"], "properties": {"id": {"type": "string"}, "hypothesis_id": {"type": "string"}, "title": {"type": "string"}, "purpose": {"type": "string"}, "description": {"type": "string"}, "command": {"type": "array", "minItems": 1, "items": {"type": "string"}}, "cwd": {"type": "string"}, "permission": {"type": "string", "enum": ["green", "yellow", "red"]}, "estimated_seconds": {"type": "integer", "minimum": 1, "maximum": 3600}, "status": {"type": "string", "enum": ["suggested", "running", "completed", "blocked"]}, "expected_support": {"type": "string"}, "expected_weakening": {"type": "string"}, "result": {"type": "string"}, "effect": {"type": "string", "enum": ["pending", "supports", "weakens", "inconclusive"]}, "latest_run": {"type": "string"}, "prediction": {"$ref": "#/$defs/prediction"}, "prediction_assessment": {"type": "string", "enum": ["pending", "matched", "partially_matched", "missed", "unknown"]}, "prediction_comparison": {"type": "string"}}},
+    "prediction": {"type": "object", "additionalProperties": false, "required": ["choice", "rationale", "predicted_at"], "properties": {"choice": {"type": "string"}, "rationale": {"type": "string"}, "predicted_at": {"type": "string"}}},
+    "causal_node": {"type": "object", "additionalProperties": false, "required": ["id", "label", "kind", "certainty", "evidence_ids", "x", "y", "user_edited", "user_created"], "properties": {"id": {"type": "string"}, "label": {"type": "string"}, "kind": {"type": "string", "enum": ["trigger", "decision", "state", "failure", "fix", "unknown"]}, "certainty": {"type": "string", "enum": ["fact", "inference", "unknown"]}, "evidence_ids": {"type": "array", "items": {"type": "string"}}, "x": {"type": "integer"}, "y": {"type": "integer"}, "user_edited": {"type": "boolean"}, "user_created": {"type": "boolean"}}},
+    "causal_edge": {"type": "object", "additionalProperties": false, "required": ["id", "from", "to", "label", "certainty", "user_created"], "properties": {"id": {"type": "string"}, "from": {"type": "string"}, "to": {"type": "string"}, "label": {"type": "string"}, "certainty": {"type": "string", "enum": ["fact", "inference", "unknown"]}, "user_created": {"type": "boolean"}}},
+    "semantic_diff": {"type": "object", "additionalProperties": false, "required": ["status", "summary", "old_rule", "new_rule", "changed_invariants", "affected_paths", "remaining_risks", "source_references"], "properties": {"status": {"type": "string", "enum": ["not_available", "proposed", "observed"]}, "summary": {"type": "string"}, "old_rule": {"type": "string"}, "new_rule": {"type": "string"}, "changed_invariants": {"type": "array", "items": {"type": "string"}}, "affected_paths": {"type": "array", "items": {"type": "string"}}, "remaining_risks": {"type": "array", "items": {"type": "string"}}, "source_references": {"type": "array", "items": {"$ref": "#/$defs/reference"}}}}
+  }
+}

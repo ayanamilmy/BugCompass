@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "project": "blender",
+  "pack_version": "0.1.0",
+  "language": "zh-CN",
+  "description": "BugCompass 的 Blender 初始知识包；只提供调查导航，不代表完整项目知识。",
+  "files": [
+    "project-guide.md",
+    "source-map.json",
+    "investigation.schema.json",
+    "practice/catalog.json",
+    "practice/answers.json",
+    "practice/rubric.json",
+    "practice/README.md"
+  ]
+}

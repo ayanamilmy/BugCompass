@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "pack_version": "0.1.0",
+  "project": "blender",
+  "description": "BugCompass 历史 PR 练习模式首批手工案例。练习阶段只读取本文件，不读取 answers.json。",
+  "cases": [
+    {
+      "id": "blender-162961-pointcloud-position-crash",
+      "issue_id": 162961,
+      "title": "没有 position 属性的点云导致转换节点崩溃",
+      "difficulty": "easy",
+      "reported_symptom": "Geometry Nodes 中，Points to Volume 或 Points to SDF Grid 接收到一个没有 position 属性的点云组件时可能崩溃。",
+      "reproduction_outline": ["构造一个空的或缺少 position 属性的 PointCloud 组件", "将它连接到 Points to Volume 或 Points to SDF Grid", "触发节点求值"],
+      "pre_fix_commit": "a288aaadb12f7fe01a3d76c62530d94f5b831c61",
+      "suggested_minutes": 20,
+      "suggested_ai_runs": 2,
+      "tags": ["geometry-nodes", "point-cloud", "crash", "attributes"]
+    },
+    {
+      "id": "blender-163762-mesh-merge-multires",
+      "issue_id": 163762,
+      "title": "合并网格顶点后 Multires 数据丢失",
+      "difficulty": "medium",
+      "reported_symptom": "带有 Multires 数据的网格执行顶点合并后，部分多分辨率数据没有保留下来。",
+      "reproduction_outline": ["准备带 Multires 数据或 grid paint mask 的网格", "执行 Merge by Distance 或等价顶点合并", "检查合并后 corner custom data"],
+      "pre_fix_commit": "6c74e82ecb0dc3ae992219f65439374e9112c349",
+      "suggested_minutes": 30,
+      "suggested_ai_runs": 3,
+      "tags": ["geometry", "mesh", "multires", "custom-data"]
+    },
+    {
+      "id": "blender-163348-dual-mesh-boundary-assert",
+      "issue_id": 163348,
+      "title": "Dual Mesh 边界属性传递触发断言",
+      "difficulty": "medium",
+      "reported_symptom": "Geometry Nodes 的 Dual Mesh 在保留边界并传递面属性时，特定拓扑可能触发数组范围断言。",
+      "reproduction_outline": ["创建具有边界的网格和面域属性", "运行 Dual Mesh 并启用 Keep Boundaries", "检查属性传递阶段的断言"],
+      "pre_fix_commit": "b765a581e5d2bee3b39dd392400244e8ae674e11",
+      "suggested_minutes": 30,
+      "suggested_ai_runs": 3,
+      "tags": ["geometry-nodes", "dual-mesh", "attributes", "assertion"]
+    },
+    {
+      "id": "blender-162455-bool-attribute-default",
+      "issue_id": 162455,
+      "title": "布尔属性输入被错误地当作普通值",
+      "difficulty": "medium",
+      "reported_symptom": "Geometry Nodes 修改器中的布尔输入带有默认属性名时，没有自动选择 Attribute 输入方式，而其他数据类型表现正常。",
+      "reproduction_outline": ["创建包含布尔输入接口的几何节点组", "为接口设置默认属性名", "在修改器面板检查默认输入类型"],
+      "pre_fix_commit": "b7b90053d8cfa1524a29fe558c896bdd0c30e7ed",
+      "suggested_minutes": 35,
+      "suggested_ai_runs": 3,
+      "tags": ["geometry-nodes", "rna", "socket", "attributes"]
+    },
+    {
+      "id": "blender-118558-outliner-jump-sync",
+      "issue_id": 118558,
+      "title": "Jump to Target 后 Outliner 活动对象没有同步",
+      "difficulty": "medium",
+      "reported_symptom": "从其他编辑器跳转到对象或骨骼后，视图中的活动目标已经变化，但 Outliner 仍显示旧的活动项。",
+      "reproduction_outline": ["准备多个对象或骨骼并打开 Outliner", "使用 Jump to Target 类操作切换活动目标", "观察 Outliner 高亮是否同步"],
+      "pre_fix_commit": "1a6eeebb9a2d5cfff46b695bc2f75aed2cab3e74",
+      "suggested_minutes": 35,
+      "suggested_ai_runs": 3,
+      "tags": ["outliner", "editors", "selection", "notifier"]
+    },
+    {
+      "id": "blender-162848-vulkan-single-values",
+      "issue_id": 162848,
+      "title": "Vulkan 下合成器单值输入变成零",
+      "difficulty": "hard",
+      "reported_symptom": "使用 Vulkan 后端时，部分合成器节点的单值输入在内部被读成零；非单值输入或其他后端不一定出现。",
+      "reproduction_outline": ["使用 Vulkan 后端打开合成器", "构造依赖单值输入的节点链", "对比 Vulkan 与其他后端的输出"],
+      "pre_fix_commit": "29d200f216cf254a0b8e680dbf29435099b18719",
+      "suggested_minutes": 45,
+      "suggested_ai_runs": 4,
+      "tags": ["compositor", "vulkan", "gpu", "single-value", "cache"]
+    },
+    {
+      "id": "blender-162925-compositor-cache-scrub",
+      "issue_id": 162925,
+      "title": "拖动时间轴会错误清空合成器帧缓存",
+      "difficulty": "hard",
+      "reported_symptom": "拖动时间轴或播放循环回到开头时，合成器帧缓存被不必要地清空，导致缓存失效和性能下降。",
+      "reproduction_outline": ["建立能够观察帧缓存复用的合成器场景", "拖动时间轴或让播放循环", "观察缓存是否被全部失效"],
+      "pre_fix_commit": "8aababd0bed6eaf116200d7b4d47c1f073c56341",
+      "suggested_minutes": 50,
+      "suggested_ai_runs": 4,
+      "tags": ["depsgraph", "compositor", "cache-invalidation", "timeline"]
+    },
+    {
+      "id": "blender-163402-render-handler-cursor-crash",
+      "issue_id": 163402,
+      "title": "预渲染处理器修改数据时悬停 UI 导致崩溃",
+      "difficulty": "hard",
+      "reported_symptom": "注册会修改数据的 pre-render handler 后开始渲染，在不同 UI 区域移动鼠标可能发生崩溃，即使启用了 Interface Lock。",
+      "reproduction_outline": ["注册一个渲染前修改数据的处理器", "启用 Interface Lock 并开始渲染", "在不同编辑器区域移动鼠标触发光标更新"],
+      "pre_fix_commit": "4554f9e8b0f70796d59a6ba9af122447a9de4b0e",
+      "suggested_minutes": 45,
+      "suggested_ai_runs": 4,
+      "tags": ["render", "handlers", "ui", "thread-safety", "cursor"]
+    },
+    {
+      "id": "blender-162893-clip-planes-edit-crash",
+      "issue_id": 162893,
+      "title": "通过 API 启用视图裁剪面后编辑模式崩溃",
+      "difficulty": "medium",
+      "reported_symptom": "通过 Python API 设置 rv3d.use_clip_planes 后进入或操作编辑模式，选择、投影或吸附等路径可能崩溃。",
+      "reproduction_outline": ["通过 API 将 RegionView3D.use_clip_planes 设为真", "不要通过交互框选流程初始化裁剪区域", "进入编辑模式并执行选择或吸附"],
+      "pre_fix_commit": "4cf372ccdc50de7c57dcec1057b5445290c72a90",
+      "suggested_minutes": 35,
+      "suggested_ai_runs": 3,
+      "tags": ["viewport", "edit-mode", "python-api", "clipping", "null-pointer"]
+    },
+    {
+      "id": "blender-163596-obj-vertex-groups",
+      "issue_id": 163596,
+      "title": "OBJ 导入后顶点组丢失",
+      "difficulty": "medium",
+      "reported_symptom": "导入包含顶点组信息的 OBJ 时，启用网格验证后导入结果缺少预期顶点组。",
+      "reproduction_outline": ["准备包含分组信息的 OBJ", "启用顶点组导入和网格验证", "导入后检查组名和顶点权重"],
+      "pre_fix_commit": "490e0b283c992cf3f8db2e11b825a59fa287d5d0",
+      "suggested_minutes": 35,
+      "suggested_ai_runs": 3,
+      "tags": ["obj", "import", "vertex-groups", "mesh-validation"]
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "project": "blender",
+  "pack_version": "0.1.0",
+  "completeness": "initial",
+  "areas": [
+    {"id": "depsgraph", "paths": ["source/blender/depsgraph"], "focus": "依赖关系、求值与更新传播"},
+    {"id": "editors", "paths": ["source/blender/editors"], "focus": "操作符、编辑器交互与通知"},
+    {"id": "blenkernel", "paths": ["source/blender/blenkernel"], "focus": "核心数据、所有权与生命周期"},
+    {"id": "rna", "paths": ["source/blender/makesrna", "source/blender/makesdna"], "focus": "属性暴露、更新回调与数据定义"},
+    {"id": "geometry-nodes", "paths": ["source/blender/nodes/geometry", "source/blender/geometry"], "focus": "几何节点、字段与几何处理"},
+    {"id": "render", "paths": ["source/blender/render", "intern/cycles"], "focus": "渲染管线与 Cycles"},
+    {"id": "ui", "paths": ["source/blender/editors/interface"], "focus": "界面布局、状态与事件处理"}
+  ]
+}
