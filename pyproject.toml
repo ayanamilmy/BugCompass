@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bugcompass"
-version = "0.1.0"
+version = "0.2.0"
 description = "面向 Blender Bug 调查的本地案件工作区工具"
 readme = "README.zh-CN.md"
 requires-python = ">=3.11"
@@ -15,5 +15,11 @@ dependencies = []
 [project.scripts]
 bugcompass = "bugcompass.cli:main"
 
+[project.urls]
+Repository = "https://github.com/ayanamilmy/BugCompass"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

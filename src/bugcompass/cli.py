@@ -63,6 +63,39 @@ def build_parser() -> argparse.ArgumentParser:
     show.add_argument("--workspace", required=True)
     show.add_argument("--id", required=True, dest="case_id")
     show.set_defaults(handler=_handle_case_show)
+    metrics = case_commands.add_parser("metrics", help="显示 Case 的模型/耗时/轮次/成本指标（本地）")
+    metrics.add_argument("--workspace", required=True)
+    metrics.add_argument("--id", required=True, dest="case_id")
+    metrics.set_defaults(handler=_handle_case_metrics)
+
+    backup = commands.add_parser("backup", help="把整个工作区（含全部 Case）打包成备份 zip")
+    backup.add_argument("--workspace", required=True)
+    backup.add_argument("--output", default=None, help="备份文件路径（默认保存到 ~/.bugcompass/backups/）")
+    backup.set_defaults(handler=_handle_backup)
+
+    restore = commands.add_parser("restore", help="从备份 zip 恢复工作区（自动执行格式迁移）")
+    restore.add_argument("--archive", required=True)
+    restore.add_argument("--dest", required=True)
+    restore.add_argument("--overwrite", action="store_true", help="目标目录已存在且不为空时允许覆盖")
+    restore.set_defaults(handler=_handle_restore)
+
+    migrate = commands.add_parser("migrate", help="把旧版本工作区迁移到当前格式（幂等，可重复执行）")
+    migrate.add_argument("--workspace", required=True)
+    migrate.set_defaults(handler=_handle_migrate)
+
+    diagnostics = commands.add_parser("diagnostics", help="导出脱敏诊断包（不含 API key 与源码）")
+    diagnostics.add_argument("--dest", required=True)
+    diagnostics.add_argument("--workspace", default=None, help="使用 --case 时需要提供工作区路径")
+    diagnostics.add_argument("--case", default=None, help="可选：附带该 Case 的结构计数（不含正文）")
+    diagnostics.set_defaults(handler=_handle_diagnostics)
+
+    telemetry = commands.add_parser("telemetry", help="统计上报管理（默认关闭，只写本地）")
+    telemetry.add_argument("--status", action="store_true", help="查看当前状态与本地待发事件")
+    telemetry.add_argument("--enable", action="store_true", help="主动开启本地统计记录")
+    telemetry.add_argument("--disable", action="store_true", help="关闭统计记录")
+    telemetry.add_argument("--export", metavar="目录", help="把待发事件导出成 JSON 供检查")
+    telemetry.add_argument("--clear", action="store_true", help="清空本地待发事件")
+    telemetry.set_defaults(handler=_handle_telemetry)
     return parser
 
 
@@ -113,6 +146,105 @@ def _handle_case_show(args: argparse.Namespace) -> int:
     print("相关文件：")
     for name, path in paths.items():
         print(f"- {name}: {path}")
+    return 0
+
+
+def _handle_backup(args: argparse.Namespace) -> int:
+    from .backup import create_backup
+
+    target = create_backup(args.workspace, args.output)
+    print("备份完成。")
+    print(f"备份文件：{target}")
+    return 0
+
+
+def _handle_restore(args: argparse.Namespace) -> int:
+    from .backup import restore_backup
+
+    destination = restore_backup(args.archive, args.dest, overwrite=args.overwrite)
+    print("恢复完成（已自动执行格式迁移）。")
+    print(f"工作区：{destination}")
+    return 0
+
+
+def _handle_migrate(args: argparse.Namespace) -> int:
+    from .backup import migrate_workspace
+
+    applied = migrate_workspace(args.workspace)
+    if not applied:
+        print("工作区已是当前格式，无需迁移。")
+    else:
+        print(f"已应用 {len(applied)} 项迁移：")
+        for item in applied:
+            print(f"- {item}")
+    return 0
+
+
+def _handle_diagnostics(args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from .diagnostics import export_bundle
+
+    case_dir = None
+    if args.case:
+        if not args.workspace:
+            print("错误：使用 --case 时必须同时指定 --workspace。", file=sys.stderr)
+            return 2
+        case_dir = Path(args.workspace).expanduser().resolve() / "cases" / args.case
+    target = export_bundle(args.dest, case_dir=case_dir, include_case_structure=case_dir is not None)
+    print("诊断包已导出（已自动脱敏并通过自检，不含 API key 与源码）。")
+    print(f"诊断包：{target}")
+    return 0
+
+
+def _handle_case_metrics(args: argparse.Namespace) -> int:
+    from .metrics import collect_case_metrics, format_cost, format_duration, load_pricing, write_case_metrics
+    from .workspace import load_workspace
+
+    workspace = load_workspace(args.workspace)
+    case_dir = workspace.path / "cases" / args.case_id
+    if not (case_dir / "case.json").is_file():
+        print(f"错误：找不到 Case：{args.case_id}", file=sys.stderr)
+        return 2
+    metrics = collect_case_metrics(case_dir, pricing=load_pricing(workspace.path))
+    write_case_metrics(case_dir, metrics)
+    totals = metrics.to_dict()["totals"]
+    print(f"Case：{args.case_id}")
+    print(f"模型：{'、'.join(metrics.models) or '暂无运行记录'}")
+    print(f"运行次数：{len(metrics.runs)}")
+    print(f"累计耗时：{format_duration(totals['duration_seconds'])}")
+    print(f"对话轮次：{totals['turns']}    工具调用：{totals['tool_calls']}")
+    print(f"输入 token：{totals['input_tokens']:,}（缓存 {totals['cached_input_tokens']:,}）    输出 token：{totals['output_tokens']:,}")
+    print(f"估计成本：{format_cost(totals['estimated_cost_usd'])}（按 pricing.json 单价；未配置则不估算）")
+    print("指标仅保存在本地：Case 目录 metrics.json")
+    return 0
+
+
+def _handle_telemetry(args: argparse.Namespace) -> int:
+    from . import telemetry
+
+    if args.enable:
+        telemetry.set_enabled(True)
+        print("统计记录已开启（仍只写本地；数据需手动导出后才会离开本机）。")
+        return 0
+    if args.disable:
+        telemetry.set_enabled(False)
+        print("统计记录已关闭。")
+        return 0
+    if args.export:
+        target = telemetry.export_pending(args.export)
+        if target is None:
+            print("当前没有待发事件。")
+        else:
+            print(f"待发事件已导出：{target}")
+            print("请自行检查内容后再决定是否发送。")
+        return 0
+    if args.clear:
+        print(f"已清空 {telemetry.clear_pending()} 条本地待发事件。")
+        return 0
+    enabled = telemetry.is_enabled()
+    print(f"统计上报：{'已开启（仅本地计数）' if enabled else '未开启（默认）'}")
+    print(f"本地待发事件：{len(telemetry.pending())} 条（~/.bugcompass/telemetry-outbox/）")
     return 0
 
 

@@ -6,3 +6,11 @@ dist/
 build/
 *.egg-info/
 workspaces/
+
+# 打包与发行产物
+packaging/Output/
+*.spec.bak
+visual-checklist-*.md
+
+# 临时数据
+*.log

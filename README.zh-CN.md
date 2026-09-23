@@ -1,6 +1,30 @@
-# BugCompass 0.1
+# BugCompass 0.2
 
 BugCompass 是一个中文优先的本地工具，用来把 Blender Bug 描述整理成可持续调查的案件，并让 Codex 基于本地源码与 Git 证据给出可验证的调查路径。推荐使用图形界面；CLI 保留给高级使用和排错。
+
+## 0.2 版本变更（稳定性与交付）
+
+- **修复 Windows 高 DPI 下的拖影、断层与裁切**：进程在启动时声明 DPI aware（默认系统级，
+  可用 `BUGCOMPASS_DPI_MODE=permonitor` 切 per-monitor v2）；滚动容器改为整像素滚动并在内容
+  变化后立即同步 scrollregion；重渲染前统一销毁旧控件；所有卡片文本改为随窗口宽度自适应换行。
+- **滚轮与滚动条**：滚轮事件按指针位置路由到可滚动区域（鼠标停在卡片上也能滚动）；
+  Ctrl+滚轮缩放界面（设置里保存）；滚动条按需显示。
+- **因果链改为思维导图交互**：拖动节点不再整画布重画（旧实现是残影的直接来源）；
+  新增平移、以鼠标为中心缩放、框选多节点、就地改名、Delete 删除、Ctrl+Z/Ctrl+Y 撤销重做、
+  自动分层布局、适应内容、网格吸附（按住 Alt 临时关闭）。所有编辑即时落盘。
+- **发行与交付**：版本号 0.2.0；Windows 打包配置（PyInstaller + Inno Setup，见
+  `packaging/README.md`）；崩溃日志与脱敏诊断包（`~/.bugcompass/logs/`，
+  GUI「导出诊断包」或 `bugcompass diagnostics`，自动剔除 API key/源码/正文并通过自检）；
+  工作区备份/恢复/迁移（`docs/MIGRATION.md`）。
+- **运行指标**：每个 Case 显示模型、运行次数、累计耗时、对话轮次、工具调用、token 与估计成本
+  （`metrics.json`，本地保存）。成本单价由你填写 `~/.bugcompass/pricing.json`（可运行
+  `bugcompass metrics` 查看提示），未配置就显示“未配置单价”，不会凭空估算。
+- **统计上报默认关闭**：开启后也只写本地 outbox，且不含正文；导出需手动执行。
+  见 `telemetry` 命令与设置界面。
+- **许可**：补齐 MIT `LICENSE` 与第三方材料审计 `THIRD_PARTY.md`（练习数据逐案核查表
+  `packs/blender/practice/PROVENANCE.md`）。
+- 打包版资源定位修复：安装包内 `packs/`、`.agents/` 可被正确找到（源码版的
+  `parents[2]` 在 frozen 后无效）。
 
 ## 推荐：图形界面
 
@@ -98,6 +122,14 @@ python -m bugcompass case create \
 python -m bugcompass case show \
   --workspace ./workspaces/blender-local \
   --id demo-001
+
+# 0.2 新增：指标 / 备份 / 恢复 / 迁移 / 诊断 / 统计上报（默认关闭）
+python -m bugcompass case metrics --workspace ./workspaces/blender-local --id demo-001
+python -m bugcompass backup --workspace ./workspaces/blender-local
+python -m bugcompass restore --archive <备份.zip> --dest <目标文件夹>
+python -m bugcompass migrate --workspace ./workspaces/blender-local
+python -m bugcompass diagnostics --dest ./diag --workspace ./workspaces/blender-local --case demo-001
+python -m bugcompass telemetry --status
 ```
 
 然后在打开本仓库的 Codex 中输入：
@@ -180,9 +212,17 @@ workspaces/blender-local/
 4. 点击“提交根因判断”，写下自己的结论。提交之前不能揭晓。
 5. 点击“揭晓真实修复”，查看真实根因、fix commit、PR、相关文件、总分、分项得分、用时和 AI 运行次数。
 
+## 发布与验证
+
+- 发布前人工检查单（Windows 100%/150%/200% DPI、三台机器、10 案例全链路、断网浏览）：
+  `docs/RELEASE-CHECKLIST.md`；配套检查单生成器 `tools/visual_checklist.py`。
+- 无头 GUI 冒烟测试（Linux/CI 上回归拖影相关代码路径）：`xvfb-run -a python tools/gui_smoke.py`。
+- 打包：`packaging/README.md`；备份/迁移：`docs/MIGRATION.md`。
+
 ## 下一阶段候选（尚未实现）
 
 - 更多历史案例，以及更接近专家评审的语义评分。
 - Case 状态流转、调查日志追加命令和更完整的案件管理界面。
 - 更多开源项目 Pack，以及用户可维护的源码区域映射。
 - 为黄色和红色实验增加容器或系统级隔离执行。
+- per-monitor DPI 的实时重排（受 Tk 8.6 限制，需评估升级 Tk 或迁移 UI 框架）。

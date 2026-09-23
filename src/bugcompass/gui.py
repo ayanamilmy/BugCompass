@@ -7,9 +7,31 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import __version__
+from .backup import BackupError, create_backup, inspect_backup, restore_backup
 from .codex_runner import CodexRunBusyError, CodexRunResult, CodexRunner
+from .diagnostics import export_bundle, install_crash_handler, install_tk_handler
+from .dpi import apply_scaling, enable_windows_dpi_awareness, scale_percent
 from .gui_controller import CaseView, GuiController
+from .metrics import (
+    collect_case_metrics,
+    format_cost,
+    format_duration,
+    load_pricing,
+    write_case_metrics,
+)
+from .mindmap import MindMapCanvas
 from .practice import PracticeCase, PracticeManager, PracticeReveal
+from .settings import load_settings, save_settings
+from .telemetry import (
+    clear_pending as clear_telemetry_pending,
+    export_pending as export_telemetry_pending,
+    is_enabled as telemetry_enabled,
+    pending as telemetry_pending,
+    record_run_metrics,
+    set_enabled as set_telemetry_enabled,
+)
+from .widgets import MouseWheelRouter, ScrollableFrame, UiScale
 from .workspace import BugCompassError
 
 
@@ -85,13 +107,25 @@ def check_gui() -> tuple[bool, str]:
 
 
 def run_gui() -> int:
-    available, message = check_gui()
-    if not available:
-        print(f"错误：{message}")
+    try:
+        import tkinter as tk  # noqa: F401
+        from tkinter import filedialog, messagebox, simpledialog, ttk
+    except (ImportError, ModuleNotFoundError) as exc:
+        print(f"错误：Tkinter 不可用：{exc}")
         return 2
 
-    import tkinter as tk
-    from tkinter import filedialog, messagebox, simpledialog, ttk
+    # 必须在创建任何 Tk 窗口之前声明 DPI aware，否则 Windows 会用位图拉伸
+    # 整个窗口，在 150%/200% 缩放下出现发虚、拖影和断层（见 dpi.py）。
+    enable_windows_dpi_awareness()
+    install_crash_handler()
+
+    # Codex 缺失不再阻止启动：历史案件仍可离线浏览（安装包交付的关键路径）。
+    codex_warning = None
+    if not CodexRunner.find_executable():
+        codex_warning = (
+            "未找到 Codex CLI：仍可以离线浏览、编辑历史案件和导出备份，"
+            "但自动调查不可用。安装并登录 Codex 后重启 BugCompass 即可。"
+        )
 
     class BugCompassApp(tk.Tk):
         BACKGROUND = "#0B0D10"
@@ -110,17 +144,19 @@ def run_gui() -> int:
 
         def __init__(self) -> None:
             super().__init__()
-            self.title("BugCompass — Blender Bug 调查助手")
+            self.title(f"BugCompass — Blender Bug 调查助手 · v{__version__}")
             self.geometry("1120x760")
             self.minsize(940, 650)
             self.configure(background=self.BACKGROUND)
-            self.option_add("*Font", ("SF Pro Text", 11))
-            self.option_add("*insertBackground", self.TEXT)
 
             self.controller = GuiController()
-            project_root = Path(__file__).resolve().parents[2]
-            self.codex_runner = CodexRunner(project_root)
-            self.practice_manager = PracticeManager(project_root, self.controller.workspace_path)
+            # 资源根目录在源码树 / PyInstaller / 便携版下各不相同（见 resources.py），
+            # 打包成安装包后 parents[2] 不再存在，必须走统一的资源定位。
+            from .resources import data_root
+
+            data_root_path = data_root()
+            self.codex_runner = CodexRunner(data_root_path)
+            self.practice_manager = PracticeManager(data_root_path, self.controller.workspace_path)
             self.repo_var = tk.StringVar()
             self.repo_status_var = tk.StringVar(value="请选择本地 Blender 源码文件夹。")
             self.char_count_var = tk.StringVar(value="0 个字符")
@@ -142,17 +178,24 @@ def run_gui() -> int:
             self.recent_case_ids: list[str] = []
             self.events: queue.SimpleQueue[tuple[str, Any]] = queue.SimpleQueue()
             self.path_cards: list[Any] = []
-            self.causal_canvas: Any = None
+            self.mindmap: MindMapCanvas | None = None
             self.causal_graph: dict[str, Any] = {"nodes": [], "edges": []}
-            self.causal_drag_node: str | None = None
-            self.causal_drag_offset = (0, 0)
-            self.causal_edge_source: str | None = None
-            self.causal_edge_draft: Any = None
-            self.causal_selected_edge: str | None = None
+
+            # 设置 / 缩放 / 滚轮路由（Windows 滚动与拖影修复的一部分）。
+            self.settings = load_settings()
+            self.ui_scale = UiScale(self, tk)
+            self.wheel_router = MouseWheelRouter(self)
+            self._tk_module = tk
+            self._ttk_module = ttk
+            self._apply_saved_ui_scale()
+            self.option_add("*Font", self._font("SF Pro Text", 11))
+            self.option_add("*insertBackground", self.TEXT)
 
             self._configure_styles(ttk)
             self._build_layout(tk, ttk, filedialog, messagebox)
             self.simple_dialog = simpledialog
+            # Tk 回调里的异常也要写进崩溃日志（安装版没有控制台可看）。
+            install_tk_handler(self)
             self._refresh_recent_cases()
             self.show_new_page()
             self.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -169,28 +212,28 @@ def run_gui() -> int:
             style.configure("Elevated.TFrame", background=self.SURFACE_ALT)
             style.configure("Card.TFrame", background=self.SURFACE)
             style.configure("Sidebar.TFrame", background=self.SIDEBAR)
-            style.configure("Title.TLabel", background=self.BACKGROUND, foreground=self.TEXT, font=("SF Pro Display", 28, "bold"))
-            style.configure("Eyebrow.TLabel", background=self.BACKGROUND, foreground=self.ORANGE, font=("SF Pro Text", 9, "bold"))
-            style.configure("PageSubtitle.TLabel", background=self.BACKGROUND, foreground=self.MUTED, font=("SF Pro Text", 12))
-            style.configure("PageStatus.TLabel", background=self.BACKGROUND, foreground=self.ORANGE, font=("SF Pro Text", 10, "bold"))
-            style.configure("Heading.TLabel", background=self.SURFACE, foreground=self.TEXT, font=("SF Pro Display", 15, "bold"))
-            style.configure("Body.TLabel", background=self.SURFACE, foreground=self.TEXT, font=("SF Pro Text", 11))
-            style.configure("Muted.TLabel", background=self.SURFACE, foreground=self.MUTED, font=("SF Pro Text", 10))
-            style.configure("Status.TLabel", background=self.SURFACE, foreground=self.ORANGE, font=("SF Pro Text", 10, "bold"))
-            style.configure("Primary.TButton", font=("SF Pro Text", 11, "bold"), padding=(20, 13), background=self.ORANGE, foreground="#17120E", borderwidth=0, relief="flat")
+            style.configure("Title.TLabel", background=self.BACKGROUND, foreground=self.TEXT, font=self._font("SF Pro Display", 28, "bold"))
+            style.configure("Eyebrow.TLabel", background=self.BACKGROUND, foreground=self.ORANGE, font=self._font("SF Pro Text", 9, "bold"))
+            style.configure("PageSubtitle.TLabel", background=self.BACKGROUND, foreground=self.MUTED, font=self._font("SF Pro Text", 12))
+            style.configure("PageStatus.TLabel", background=self.BACKGROUND, foreground=self.ORANGE, font=self._font("SF Pro Text", 10, "bold"))
+            style.configure("Heading.TLabel", background=self.SURFACE, foreground=self.TEXT, font=self._font("SF Pro Display", 15, "bold"))
+            style.configure("Body.TLabel", background=self.SURFACE, foreground=self.TEXT, font=self._font("SF Pro Text", 11))
+            style.configure("Muted.TLabel", background=self.SURFACE, foreground=self.MUTED, font=self._font("SF Pro Text", 10))
+            style.configure("Status.TLabel", background=self.SURFACE, foreground=self.ORANGE, font=self._font("SF Pro Text", 10, "bold"))
+            style.configure("Primary.TButton", font=self._font("SF Pro Text", 11, "bold"), padding=(20, 13), background=self.ORANGE, foreground="#17120E", borderwidth=0, relief="flat")
             style.map("Primary.TButton", foreground=[("disabled", self.SUBTLE), ("!disabled", "#17120E")], background=[("active", self.ORANGE_HOVER), ("disabled", self.BORDER), ("!disabled", self.ORANGE)])
-            style.configure("Action.TButton", font=("SF Pro Text", 10, "bold"), padding=(13, 9), background=self.SURFACE_ALT, foreground=self.TEXT, borderwidth=0, relief="flat")
+            style.configure("Action.TButton", font=self._font("SF Pro Text", 10, "bold"), padding=(13, 9), background=self.SURFACE_ALT, foreground=self.TEXT, borderwidth=0, relief="flat")
             style.map("Action.TButton", background=[("active", self.BORDER), ("!disabled", self.SURFACE_ALT)], foreground=[("disabled", self.SUBTLE), ("!disabled", self.TEXT)])
-            style.configure("Ghost.TButton", font=("SF Pro Text", 10), padding=(10, 7), background=self.SURFACE, foreground=self.MUTED, borderwidth=0, relief="flat")
+            style.configure("Ghost.TButton", font=self._font("SF Pro Text", 10), padding=(10, 7), background=self.SURFACE, foreground=self.MUTED, borderwidth=0, relief="flat")
             style.map("Ghost.TButton", background=[("active", self.SURFACE_ALT)], foreground=[("active", self.TEXT), ("!disabled", self.MUTED)])
-            style.configure("SidebarTitle.TLabel", background=self.SIDEBAR, foreground=self.TEXT, font=("SF Pro Display", 16, "bold"))
-            style.configure("SidebarHint.TLabel", background=self.SIDEBAR, foreground=self.MUTED, font=("SF Pro Text", 9))
-            style.configure("Brand.TLabel", background=self.SIDEBAR, foreground=self.ORANGE, font=("SF Pro Text", 9, "bold"))
-            style.configure("Step.TLabel", background=self.SURFACE_ALT, foreground=self.MUTED, padding=(10, 5), font=("SF Pro Text", 9, "bold"))
-            style.configure("StepActive.TLabel", background="#332319", foreground=self.ORANGE, padding=(10, 5), font=("SF Pro Text", 9, "bold"))
+            style.configure("SidebarTitle.TLabel", background=self.SIDEBAR, foreground=self.TEXT, font=self._font("SF Pro Display", 16, "bold"))
+            style.configure("SidebarHint.TLabel", background=self.SIDEBAR, foreground=self.MUTED, font=self._font("SF Pro Text", 9))
+            style.configure("Brand.TLabel", background=self.SIDEBAR, foreground=self.ORANGE, font=self._font("SF Pro Text", 9, "bold"))
+            style.configure("Step.TLabel", background=self.SURFACE_ALT, foreground=self.MUTED, padding=(10, 5), font=self._font("SF Pro Text", 9, "bold"))
+            style.configure("StepActive.TLabel", background="#332319", foreground=self.ORANGE, padding=(10, 5), font=self._font("SF Pro Text", 9, "bold"))
             style.configure("Dark.TEntry", fieldbackground=self.SURFACE_ALT, foreground=self.TEXT, insertcolor=self.TEXT, padding=10, borderwidth=1)
             style.configure("Dark.TLabelframe", background=self.SURFACE, bordercolor=self.BORDER, relief="solid", borderwidth=1)
-            style.configure("Dark.TLabelframe.Label", background=self.SURFACE, foreground=self.MUTED, font=("SF Pro Text", 9, "bold"))
+            style.configure("Dark.TLabelframe.Label", background=self.SURFACE, foreground=self.MUTED, font=self._font("SF Pro Text", 9, "bold"))
 
         def _build_layout(self, tk_module: Any, ttk_module: Any, file_dialog: Any, message_box: Any) -> None:
             self.file_dialog = file_dialog
@@ -207,7 +250,7 @@ def run_gui() -> int:
             brand.pack(fill="x", pady=(0, 28))
             logo = tk_module.Canvas(brand, width=34, height=34, background=self.SIDEBAR, highlightthickness=0)
             logo.create_oval(2, 2, 32, 32, fill=self.ORANGE, outline="")
-            logo.create_text(17, 17, text="◈", fill="#17120E", font=("SF Pro Display", 17, "bold"))
+            logo.create_text(17, 17, text="◈", fill="#17120E", font=self._font("SF Pro Display", 17, "bold"))
             logo.pack(side="left", padx=(0, 10))
             brand_text = ttk_module.Frame(brand, style="Sidebar.TFrame")
             brand_text.pack(side="left")
@@ -215,7 +258,7 @@ def run_gui() -> int:
             ttk_module.Label(brand_text, text="Blender 调查台", style="SidebarTitle.TLabel").pack(anchor="w")
             ttk_module.Button(sidebar, text="＋  新建调查", command=self.show_new_page, style="Primary.TButton").pack(fill="x", pady=(0, 8))
             ttk_module.Button(sidebar, text="◫  历史 PR 练习", command=self.show_practice_page, style="Action.TButton").pack(fill="x", pady=(0, 28))
-            ttk_module.Label(sidebar, text="最近案件", style="SidebarTitle.TLabel", font=("SF Pro Text", 11, "bold")).pack(anchor="w")
+            ttk_module.Label(sidebar, text="最近案件", style="SidebarTitle.TLabel", font=self._font("SF Pro Text", 11, "bold")).pack(anchor="w")
             ttk_module.Label(sidebar, text="保存在本地 · 最多显示 10 个", style="SidebarHint.TLabel").pack(anchor="w", pady=(3, 12))
             self.recent_list = tk_module.Listbox(
                 sidebar,
@@ -226,7 +269,7 @@ def run_gui() -> int:
                 selectbackground=self.SURFACE_ALT,
                 selectforeground=self.TEXT,
                 activestyle="none",
-                font=("SF Pro Text", 10),
+                font=self._font("SF Pro Text", 10),
                 selectborderwidth=0,
             )
             self.recent_list.pack(fill="both", expand=True)
@@ -276,7 +319,7 @@ def run_gui() -> int:
                 selectbackground=self.SURFACE_ALT,
                 selectforeground=self.TEXT,
                 activestyle="none",
-                font=("SF Pro Text", 10),
+                font=self._font("SF Pro Text", 10),
             )
             self.practice_list.grid(row=0, column=0, sticky="nsew")
             self.practice_list.bind("<<ListboxSelect>>", self._select_practice_case)
@@ -291,9 +334,9 @@ def run_gui() -> int:
             self.practice_steps_var = tk_module.StringVar()
             self.practice_status_var = tk_module.StringVar()
             ttk_module.Label(detail, textvariable=self.practice_meta_var, style="Status.TLabel").grid(row=0, column=0, sticky="w")
-            ttk_module.Label(detail, textvariable=self.practice_title_var, style="Heading.TLabel", font=("SF Pro Display", 18, "bold"), wraplength=520, justify="left").grid(row=1, column=0, sticky="w", pady=(7, 8))
+            ttk_module.Label(detail, textvariable=self.practice_title_var, style="Heading.TLabel", font=self._font("SF Pro Display", 18, "bold"), wraplength=520, justify="left").grid(row=1, column=0, sticky="w", pady=(7, 8))
             ttk_module.Label(detail, textvariable=self.practice_symptom_var, style="Body.TLabel", wraplength=520, justify="left").grid(row=2, column=0, sticky="w")
-            ttk_module.Label(detail, text="复现轮廓", style="Muted.TLabel", font=("SF Pro Text", 9, "bold")).grid(row=3, column=0, sticky="w", pady=(18, 5))
+            ttk_module.Label(detail, text="复现轮廓", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).grid(row=3, column=0, sticky="w", pady=(18, 5))
             ttk_module.Label(detail, textvariable=self.practice_steps_var, style="Body.TLabel", wraplength=520, justify="left").grid(row=4, column=0, sticky="nw")
             ttk_module.Label(detail, textvariable=self.practice_status_var, style="Status.TLabel").grid(row=5, column=0, sticky="w", pady=(12, 8))
             self.practice_start_button = ttk_module.Button(detail, text="进入修复前版本并开始调查  →", command=self._start_practice, style="Primary.TButton", state="disabled")
@@ -354,7 +397,7 @@ def run_gui() -> int:
                 selectforeground=self.TEXT,
                 padx=14,
                 pady=12,
-                font=("SF Pro Text", 11),
+                font=self._font("SF Pro Text", 11),
             )
             self.bug_text.grid(row=1, column=0, sticky="nsew")
             self.bug_text.bind("<<Modified>>", self._update_char_count)
@@ -385,17 +428,17 @@ def run_gui() -> int:
             summary_card.grid(row=1, column=0, sticky="ew", pady=(0, 10))
             summary_card.columnconfigure(0, weight=1)
             summary_card.columnconfigure(1, minsize=210)
-            ttk_module.Label(summary_card, textvariable=self.result_summary_var, style="Body.TLabel", justify="left").grid(row=0, column=0, sticky="w")
+            ttk_module.Label(summary_card, textvariable=self.result_summary_var, style="Body.TLabel", justify="left", wraplength=560).grid(row=0, column=0, sticky="w")
             codex_panel = ttk_module.Frame(summary_card, style="Elevated.TFrame", padding=(14, 11))
             codex_panel.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(18, 0))
-            self.codex_status_label = ttk_module.Label(codex_panel, textvariable=self.codex_status_var, background=self.SURFACE_ALT, foreground=self.MUTED, font=("SF Pro Text", 11, "bold"))
+            self.codex_status_label = ttk_module.Label(codex_panel, textvariable=self.codex_status_var, background=self.SURFACE_ALT, foreground=self.MUTED, font=self._font("SF Pro Text", 11, "bold"))
             self.codex_status_label.pack(anchor="w")
-            ttk_module.Label(codex_panel, textvariable=self.codex_status_detail_var, background=self.SURFACE_ALT, foreground=self.MUTED, font=("SF Pro Text", 9), wraplength=190, justify="left").pack(anchor="w", pady=(4, 0))
+            ttk_module.Label(codex_panel, textvariable=self.codex_status_detail_var, background=self.SURFACE_ALT, foreground=self.MUTED, font=self._font("SF Pro Text", 9), wraplength=190, justify="left").pack(anchor="w", pady=(4, 0))
             ttk_module.Label(summary_card, textvariable=self.result_hint_var, style="Status.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
             self.details_button = ttk_module.Button(summary_card, text="查看环境详情", command=self._toggle_details, style="Ghost.TButton")
             self.details_button.grid(row=2, column=0, sticky="w", pady=(8, 0))
             self.details_frame = ttk_module.Frame(summary_card, style="Card.TFrame")
-            self.details_text = tk_module.Text(self.details_frame, height=7, wrap="none", font=("SF Mono", 9), relief="flat", borderwidth=0, background=self.SURFACE_ALT, foreground=self.MUTED, padx=10, pady=10)
+            self.details_text = tk_module.Text(self.details_frame, height=7, wrap="none", font=self._font("SF Mono", 9), relief="flat", borderwidth=0, background=self.SURFACE_ALT, foreground=self.MUTED, padx=10, pady=10)
             self.details_text.pack(fill="both", expand=True, pady=(6, 0))
 
             actions = ttk_module.Frame(page, style="App.TFrame")
@@ -408,6 +451,10 @@ def run_gui() -> int:
             self.continue_button.pack(side="left", padx=(10, 0))
             self.cancel_button = ttk_module.Button(actions, text="停止 Codex  ■", command=self._cancel_investigation, style="Action.TButton", state="disabled")
             self.cancel_button.pack(side="left", padx=(8, 0))
+            ttk_module.Button(actions, text="备份", command=self._backup_workspace, style="Action.TButton").pack(side="left", padx=(8, 0))
+            ttk_module.Button(actions, text="恢复备份…", command=self._restore_backup_dialog, style="Action.TButton").pack(side="left", padx=(8, 0))
+            ttk_module.Button(actions, text="导出诊断包", command=self._export_diagnostics, style="Action.TButton").pack(side="left", padx=(8, 0))
+            ttk_module.Button(actions, text="⚙ 设置", command=self._open_settings, style="Ghost.TButton").pack(side="left", padx=(8, 0))
             self.submit_judgment_button = ttk_module.Button(actions, text="提交根因判断", command=self._open_judgment_dialog, style="Primary.TButton")
             self.reveal_button = ttk_module.Button(actions, text="揭晓真实修复", command=self._reveal_practice, style="Action.TButton")
             ttk_module.Label(actions, textvariable=self.copy_status_var, style="PageStatus.TLabel").pack(side="left", padx=12)
@@ -415,18 +462,22 @@ def run_gui() -> int:
             timeline_row = ttk_module.Frame(page, style="App.TFrame")
             timeline_row.grid(row=3, column=0, sticky="ew", pady=(0, 10))
             ttk_module.Label(timeline_row, text="LIVE", style="Eyebrow.TLabel").pack(side="left", padx=(0, 12))
-            self.timeline = tk_module.Listbox(timeline_row, height=2, borderwidth=0, highlightthickness=0, background=self.SURFACE_ALT, foreground=self.MUTED, selectbackground=self.SURFACE_ALT, activestyle="none", font=("SF Pro Text", 9))
+            self.timeline = tk_module.Listbox(timeline_row, height=2, borderwidth=0, highlightthickness=0, background=self.SURFACE_ALT, foreground=self.MUTED, selectbackground=self.SURFACE_ALT, activestyle="none", font=self._font("SF Pro Text", 9))
             self.timeline.pack(side="left", fill="x", expand=True, ipady=4)
 
-            self.cards_canvas = tk_module.Canvas(page, highlightthickness=0, background=self.BACKGROUND)
-            scrollbar = ttk_module.Scrollbar(page, orient="vertical", command=self.cards_canvas.yview)
-            self.cards_canvas.configure(yscrollcommand=scrollbar.set)
-            self.cards_canvas.grid(row=4, column=0, sticky="nsew")
-            scrollbar.grid(row=4, column=1, sticky="ns")
-            self.cards_host = ttk_module.Frame(self.cards_canvas, style="App.TFrame")
-            self.cards_window = self.cards_canvas.create_window((0, 0), window=self.cards_host, anchor="nw")
-            self.cards_host.bind("<Configure>", lambda _e: self.cards_canvas.configure(scrollregion=self.cards_canvas.bbox("all")))
-            self.cards_canvas.bind("<Configure>", lambda e: self.cards_canvas.itemconfigure(self.cards_window, width=e.width))
+            # 滚动容器：统一滚轮路由 + 整像素滚动 + 自动换行（Windows 拖影/断层/裁切的修复）。
+            self.cards_scroll = ScrollableFrame(
+                page,
+                tk_module,
+                ttk_module,
+                self.wheel_router,
+                background=self.BACKGROUND,
+            )
+            page.rowconfigure(4, weight=1)
+            self.cards_scroll.grid(row=4, column=0, sticky="nsew")
+            self.cards_canvas = self.cards_scroll.canvas  # 兼容旧引用
+            self.cards_host = self.cards_scroll.content
+            self.cards_scroll.set_zoom_callback(self._on_cards_zoom)
 
         def show_new_page(self) -> None:
             self.new_page.tkraise()
@@ -713,6 +764,11 @@ def run_gui() -> int:
                 self.after(100, self._poll_events)
 
         def _finish_codex_run(self, view: CaseView, result: CodexRunResult) -> None:
+            # 无论成败都先落盘指标（本地）；上报仅在用户开启后记录计数。
+            try:
+                self._record_run_metrics(view)
+            except Exception:
+                pass
             if result.cancelled:
                 self.controller.set_case_status(view.case_id, "cancelled")
                 self.events.put(("cancelled", self.controller.load_case(view.case_id)))
@@ -855,6 +911,8 @@ def run_gui() -> int:
 
         def _show_case(self, view: CaseView) -> None:
             self.current_case = view
+            # 每次打开案件都刷新本地指标文件（metrics.json），不联网。
+            self._record_run_metrics(view)
             if view.practice_session_id:
                 self.submit_judgment_button.pack(side="left", padx=(10, 0))
                 self.reveal_button.pack(side="left", padx=(8, 0))
@@ -895,13 +953,14 @@ def run_gui() -> int:
             self.result_page.tkraise()
 
         def _render_investigation(self, view: CaseView) -> None:
-            for child in self.cards_host.winfo_children():
-                child.destroy()
+            # 统一走滚动容器的 clear()：销毁旧控件 + 复位滚动，避免残影。
+            self.cards_scroll.clear()
             data = view.investigation
             summary = data.get("summary", {})
             intro = ttk.LabelFrame(self.cards_host, text="问题整理", style="Dark.TLabelframe", padding=18)
             intro.pack(fill="x", pady=(0, 10))
-            ttk.Label(intro, text=summary.get("problem") or "案件已创建，Codex 正在整理问题。", style="Body.TLabel", wraplength=700, justify="left", font=("SF Pro Display", 14, "bold")).pack(anchor="w")
+            self._wrap_label(intro, text=summary.get("problem") or "案件已创建，Codex 正在整理问题。", style="Body.TLabel", justify="left", font=self._font("SF Pro Display", 14, "bold")).pack(anchor="w")
+            self._render_metrics_card(view)
             self._render_causal_graph(data.get("causal_graph", {"nodes": [], "edges": []}))
             self._render_semantic_diff(data.get("semantic_diff", {}))
             if not data.get("hypotheses"):
@@ -918,17 +977,17 @@ def run_gui() -> int:
                 title_row.pack(fill="x")
                 ttk.Label(title_row, text=item.get("title", "未命名路径"), style="Heading.TLabel").pack(side="left")
                 ttk.Label(title_row, text=f"  {priority_names.get(item.get('priority'), '未知')}优先级 {status}", style="Status.TLabel").pack(side="right")
-                ttk.Label(card, text=item.get("claim", ""), style="Body.TLabel", wraplength=700, justify="left").pack(anchor="w", pady=(10, 12))
-                ttk.Label(card, text="当前依据", style="Muted.TLabel", font=("SF Pro Text", 9, "bold")).pack(anchor="w")
+                self._wrap_label(card, text=item.get("claim", ""), style="Body.TLabel", justify="left").pack(anchor="w", pady=(10, 12))
+                ttk.Label(card, text="当前依据", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
                 for basis in item.get("basis", []):
-                    ttk.Label(card, text=f"•  {basis}", style="Body.TLabel", wraplength=700, justify="left").pack(anchor="w", pady=1)
+                    self._wrap_label(card, text=f"•  {basis}", style="Body.TLabel", justify="left").pack(anchor="w", pady=1)
                 for reference in item.get("source_references", []):
                     line = reference.get("line")
                     label = f"↗ {reference.get('path', '')}{':' + str(line) if line else ''}"
                     ttk.Button(card, text=label, command=lambda ref=reference: self._open_reference(ref), style="Ghost.TButton").pack(anchor="w", pady=2)
                 next_box = ttk.Frame(card, style="Elevated.TFrame", padding=10)
                 next_box.pack(fill="x", pady=(10, 8))
-                ttk.Label(next_box, text=f"下一步  →  {item.get('next_step', '')}", background=self.SURFACE_ALT, foreground=self.TEXT, wraplength=680, justify="left", font=("SF Pro Text", 10, "bold")).pack(anchor="w")
+                self._wrap_label(next_box, text=f"下一步  →  {item.get('next_step', '')}", background=self.SURFACE_ALT, foreground=self.TEXT, justify="left", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w")
                 buttons = ttk.Frame(card, style="Card.TFrame")
                 buttons.pack(anchor="w", pady=(4, 0))
                 ttk.Button(buttons, text="查看证据", command=lambda h=item: self._show_evidence(h), style="Action.TButton").pack(side="left")
@@ -943,17 +1002,24 @@ def run_gui() -> int:
             for title, values in (("事实", facts), ("推测", inferences), ("未知", unknowns)):
                 box = ttk.LabelFrame(self.cards_host, text=title, style="Dark.TLabelframe", padding=14)
                 box.pack(fill="x", pady=(0, 8))
-                ttk.Label(box, text="\n".join(f"•  {value}" for value in values) or "暂无", style="Body.TLabel", wraplength=700, justify="left").pack(anchor="w")
+                self._wrap_label(box, text="\n".join(f"•  {value}" for value in values) or "暂无", style="Body.TLabel", justify="left").pack(anchor="w")
             if self.current_reveal is not None:
                 self._render_practice_reveal(self.current_reveal)
+            # 内容与换行宽度最终同步（修复窄窗口/DPI 变化下长文本被裁切）。
+            self.cards_scroll.refresh()
 
         def _render_causal_graph(self, graph: dict[str, Any]) -> None:
             panel = ttk.LabelFrame(self.cards_host, text="因果链 · AI 初稿，可编辑", style="Dark.TLabelframe", padding=14)
             panel.pack(fill="x", pady=(0, 10))
             title_row = ttk.Frame(panel, style="Card.TFrame")
             title_row.pack(fill="x", pady=(0, 8))
-            ttk.Label(title_row, text="拖动卡片整理逻辑；从橙色圆点拖到另一张卡片即可连线。", style="Muted.TLabel").pack(side="left")
-            ttk.Button(title_row, text="＋ 添加节点", command=self._add_causal_node, style="Ghost.TButton").pack(side="right")
+            ttk.Label(title_row, text="拖动卡片整理逻辑；从橙色圆点拖到另一张卡片连线；空白处拖动可平移；Ctrl+滚轮缩放。", style="Muted.TLabel").pack(side="left")
+            buttons = ttk.Frame(title_row, style="Card.TFrame")
+            buttons.pack(side="right")
+            ttk.Button(buttons, text="＋ 添加节点", command=self._add_causal_node, style="Ghost.TButton").pack(side="left", padx=(6, 0))
+            ttk.Button(buttons, text="⛶ 自动布局", command=self._auto_layout_causal, style="Ghost.TButton").pack(side="left", padx=(6, 0))
+            ttk.Button(buttons, text="⊞ 适应内容", command=self._fit_causal_view, style="Ghost.TButton").pack(side="left", padx=(6, 0))
+            ttk.Button(buttons, text="1:1", command=self._reset_causal_view, style="Ghost.TButton").pack(side="left", padx=(6, 0))
             nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
             edges = graph.get("edges", []) if isinstance(graph, dict) else []
             self.causal_graph = {
@@ -961,176 +1027,69 @@ def run_gui() -> int:
                 "edges": [dict(item) for item in edges if isinstance(item, dict)],
             }
             if not nodes:
-                ttk.Label(panel, text="Codex 完成调查后会在这里生成“触发条件 → 状态变化 → 可见故障”的因果链。", style="Body.TLabel", wraplength=700, justify="left").pack(anchor="w", pady=8)
+                self.mindmap = None
+                self.causal_canvas = None
+                ttk.Label(panel, text="Codex 完成调查后会在这里生成“触发条件 → 状态变化 → 可见故障”的因果链。", style="Body.TLabel", justify="left").pack(anchor="w", pady=8)
                 return
-            self.causal_canvas = tk.Canvas(
+            colors = {
+                "surface": self.SURFACE,
+                "surface_alt": self.SURFACE_ALT,
+                "border": self.BORDER,
+                "text": self.TEXT,
+                "muted": self.MUTED,
+                "subtle": self.SUBTLE,
+                "orange": self.ORANGE,
+                "green": self.GREEN,
+                "yellow": self.YELLOW,
+                "font_family": "SF Pro Text",
+            }
+            self.mindmap = MindMapCanvas(
                 panel,
-                height=340,
-                background=self.SURFACE_ALT,
-                highlightthickness=1,
-                highlightbackground=self.BORDER,
-                takefocus=True,
+                tk,
+                colors=colors,
+                height=380,
+                on_change=self._on_mindmap_change,
+                on_status=self._on_mindmap_status,
             )
-            self.causal_canvas.pack(fill="x")
-            self.causal_canvas.bind("<ButtonPress-1>", self._causal_press)
-            self.causal_canvas.bind("<B1-Motion>", self._causal_motion)
-            self.causal_canvas.bind("<ButtonRelease-1>", self._causal_release)
-            self.causal_canvas.bind("<Double-Button-1>", self._edit_causal_node)
-            self.causal_canvas.bind("<Delete>", self._delete_causal_edge)
-            self.causal_canvas.bind("<BackSpace>", self._delete_causal_edge)
-            self._draw_causal_graph()
+            self.mindmap.canvas.pack(fill="both", expand=True)
+            self.causal_canvas = self.mindmap.canvas
+            self.mindmap.set_graph(self.causal_graph)
             legend = ttk.Frame(panel, style="Card.TFrame")
             legend.pack(fill="x", pady=(7, 0))
-            ttk.Label(legend, text="实线＝事实   虚线＝推测/未知   双击节点改文字   选中连线后按 Delete 删除", style="Muted.TLabel").pack(side="left")
+            ttk.Label(legend, text="实线＝事实   虚线＝推测/未知   双击节点就地改名   空白处框选多节点   Delete 删除选中   Ctrl+Z/Ctrl+Y 撤销重做   按住 Alt 拖动临时关闭网格吸附", style="Muted.TLabel").pack(side="left")
 
-        def _draw_causal_graph(self) -> None:
-            canvas = self.causal_canvas
-            if canvas is None:
-                return
-            canvas.delete("all")
-            by_id = {item["id"]: item for item in self.causal_graph["nodes"]}
-            width, height = 168, 66
-            for edge in self.causal_graph["edges"]:
-                source, target = by_id.get(edge.get("from")), by_id.get(edge.get("to"))
-                if not source or not target:
-                    continue
-                selected = edge.get("id") == self.causal_selected_edge
-                canvas.create_line(
-                    source["x"] + width, source["y"] + height / 2,
-                    target["x"], target["y"] + height / 2,
-                    fill=self.ORANGE if selected else self.SUBTLE,
-                    width=3 if selected else 2,
-                    dash=() if edge.get("certainty") == "fact" else (5, 4),
-                    arrow="last",
-                    tags=(f"edge:{edge['id']}", "causal-edge"),
-                )
-            certainty_colors = {"fact": self.GREEN, "inference": self.YELLOW, "unknown": self.MUTED}
-            kind_names = {"trigger": "触发", "decision": "分支", "state": "状态", "failure": "故障", "fix": "修复", "unknown": "未知"}
-            for node in self.causal_graph["nodes"]:
-                x = max(8, min(560, int(node["x"])))
-                y = max(8, min(265, int(node["y"])))
-                node["x"], node["y"] = x, y
-                tag = f"node:{node['id']}"
-                color = certainty_colors.get(node.get("certainty"), self.MUTED)
-                canvas.create_rectangle(x, y, x + width, y + height, fill=self.SURFACE, outline=color, width=2, tags=(tag, "causal-node"))
-                canvas.create_text(x + 11, y + 10, text=kind_names.get(node.get("kind"), "节点"), anchor="nw", fill=color, font=("SF Pro Text", 8, "bold"), tags=(tag, "causal-node"))
-                canvas.create_text(x + 11, y + 29, text=node.get("label", ""), anchor="nw", width=140, fill=self.TEXT, font=("SF Pro Text", 10, "bold"), tags=(tag, "causal-node"))
-                canvas.create_oval(x + width - 6, y + height / 2 - 6, x + width + 6, y + height / 2 + 6, fill=self.ORANGE, outline="", tags=(f"port:{node['id']}", "causal-port"))
+        def _auto_layout_causal(self) -> None:
+            if self.mindmap is not None:
+                self.mindmap.auto_layout()
 
-        @staticmethod
-        def _tag_value(tags: tuple[str, ...], prefix: str) -> str | None:
-            return next((tag[len(prefix):] for tag in tags if tag.startswith(prefix)), None)
+        def _fit_causal_view(self) -> None:
+            if self.mindmap is not None:
+                self.mindmap.fit_to_content()
 
-        def _causal_press(self, event: Any) -> None:
-            if self.causal_canvas is None:
-                return
-            self.causal_canvas.focus_set()
-            current = self.causal_canvas.find_withtag("current")
-            tags = self.causal_canvas.gettags(current[0]) if current else ()
-            port = self._tag_value(tags, "port:")
-            if port:
-                self.causal_edge_source = port
-                source = next(item for item in self.causal_graph["nodes"] if item["id"] == port)
-                self.causal_edge_draft = self.causal_canvas.create_line(source["x"] + 168, source["y"] + 33, event.x, event.y, fill=self.ORANGE, width=2, dash=(4, 3), arrow="last")
-                return
-            edge = self._tag_value(tags, "edge:")
-            if edge:
-                self.causal_selected_edge = edge
-                self._draw_causal_graph()
-                return
-            node_id = self._tag_value(tags, "node:")
-            if node_id:
-                node = next(item for item in self.causal_graph["nodes"] if item["id"] == node_id)
-                self.causal_drag_node = node_id
-                self.causal_drag_offset = (event.x - node["x"], event.y - node["y"])
+        def _reset_causal_view(self) -> None:
+            if self.mindmap is not None:
+                self.mindmap.reset_view()
 
-        def _causal_motion(self, event: Any) -> None:
-            if self.causal_canvas is None:
+        def _on_mindmap_change(self, graph: dict[str, Any]) -> None:
+            """思维导图的每次结构变化都会落盘；不整页重渲染，避免打断操作。"""
+            self.causal_graph = graph
+            if self.current_case is None:
                 return
-            if self.causal_edge_source and self.causal_edge_draft:
-                coords = self.causal_canvas.coords(self.causal_edge_draft)
-                self.causal_canvas.coords(self.causal_edge_draft, coords[0], coords[1], event.x, event.y)
-                return
-            if self.causal_drag_node:
-                node = next(item for item in self.causal_graph["nodes"] if item["id"] == self.causal_drag_node)
-                node["x"] = max(8, min(560, int(event.x - self.causal_drag_offset[0])))
-                node["y"] = max(8, min(265, int(event.y - self.causal_drag_offset[1])))
-                self._draw_causal_graph()
+            try:
+                self.current_case = self.controller.save_causal_graph(self.current_case.case_id, graph)
+            except BugCompassError as exc:
+                self.message_box.showerror("无法保存因果链", str(exc), parent=self)
 
-        def _causal_release(self, event: Any) -> None:
-            if self.causal_canvas is None or self.current_case is None:
-                return
-            changed = False
-            if self.causal_edge_source:
-                target_id = None
-                for item_id in reversed(self.causal_canvas.find_overlapping(event.x - 2, event.y - 2, event.x + 2, event.y + 2)):
-                    target_id = self._tag_value(self.causal_canvas.gettags(item_id), "node:")
-                    if target_id:
-                        break
-                if target_id and target_id != self.causal_edge_source:
-                    duplicate = any(edge.get("from") == self.causal_edge_source and edge.get("to") == target_id for edge in self.causal_graph["edges"])
-                    if not duplicate:
-                        edge_id = f"UE{len(self.causal_graph['edges']) + 1}"
-                        existing = {edge.get("id") for edge in self.causal_graph["edges"]}
-                        while edge_id in existing:
-                            edge_id = f"U{edge_id}"
-                        self.causal_graph["edges"].append({"id": edge_id, "from": self.causal_edge_source, "to": target_id, "label": "用户连接", "certainty": "inference", "user_created": True})
-                        changed = True
-                self.causal_edge_source = None
-                self.causal_edge_draft = None
-            elif self.causal_drag_node:
-                changed = True
-            self.causal_drag_node = None
-            self._draw_causal_graph()
-            if changed:
-                self._save_causal_graph()
-
-        def _edit_causal_node(self, event: Any) -> None:
-            if self.causal_canvas is None:
-                return
-            current = self.causal_canvas.find_withtag("current")
-            tags = self.causal_canvas.gettags(current[0]) if current else ()
-            node_id = self._tag_value(tags, "node:") or self._tag_value(tags, "port:")
-            if not node_id:
-                return
-            node = next(item for item in self.causal_graph["nodes"] if item["id"] == node_id)
-            label = self.simple_dialog.askstring("编辑因果节点", "用一句话描述这个因果环节：", initialvalue=node.get("label", ""), parent=self)
-            if label and label.strip():
-                node["label"] = label.strip()
-                node["user_edited"] = True
-                self._save_causal_graph()
+        def _on_mindmap_status(self, text: str) -> None:
+            self.result_hint_var.set(text)
 
         def _add_causal_node(self) -> None:
-            if self.current_case is None:
+            if self.current_case is None or self.mindmap is None:
                 return
             label = self.simple_dialog.askstring("添加因果节点", "用一句话描述新的因果环节：", parent=self)
             if not label or not label.strip():
                 return
-            existing = {node.get("id") for node in self.causal_graph["nodes"]}
-            index = len(self.causal_graph["nodes"]) + 1
-            node_id = f"UN{index}"
-            while node_id in existing:
-                index += 1
-                node_id = f"UN{index}"
-            self.causal_graph["nodes"].append({"id": node_id, "label": label.strip(), "kind": "unknown", "certainty": "unknown", "evidence_ids": [], "x": 30 + (index % 3) * 190, "y": 30 + (index % 4) * 75, "user_edited": True, "user_created": True})
-            self._save_causal_graph()
-
-        def _delete_causal_edge(self, _event: Any = None) -> None:
-            if not self.causal_selected_edge:
-                return
-            self.causal_graph["edges"] = [edge for edge in self.causal_graph["edges"] if edge.get("id") != self.causal_selected_edge]
-            self.causal_selected_edge = None
-            self._save_causal_graph()
-
-        def _save_causal_graph(self) -> None:
-            if self.current_case is None:
-                return
-            try:
-                self.current_case = self.controller.save_causal_graph(self.current_case.case_id, self.causal_graph)
-                self._render_investigation(self.current_case)
-                self.result_hint_var.set("因果链已保存；后续 Codex 调查会保留你的编辑。")
-            except BugCompassError as exc:
-                self.message_box.showerror("无法保存因果链", str(exc), parent=self)
+            self.mindmap.add_node(label)
 
         def _render_semantic_diff(self, semantic: dict[str, Any]) -> None:
             status = semantic.get("status", "not_available")
@@ -1142,25 +1101,25 @@ def run_gui() -> int:
             ttk.Label(header, text=names.get(status, status), style="Status.TLabel").pack(side="left")
             ttk.Button(header, text="分析当前代码改动", command=lambda: self._run_followup("semantic_diff", "working-tree"), style="Action.TButton").pack(side="right")
             if status == "not_available":
-                ttk.Label(panel, text="当前还没有可解释的相关改动。代码发生变化后点击右侧按钮，Codex 会只读分析 git diff。", style="Muted.TLabel", wraplength=700, justify="left").pack(anchor="w", pady=(8, 0))
+                self._wrap_label(panel, text="当前还没有可解释的相关改动。代码发生变化后点击右侧按钮，Codex 会只读分析 git diff。", style="Muted.TLabel", justify="left").pack(anchor="w", pady=(8, 0))
                 return
-            ttk.Label(panel, text=semantic.get("summary", ""), style="Body.TLabel", wraplength=700, justify="left", font=("SF Pro Display", 12, "bold")).pack(anchor="w", pady=(10, 8))
+            self._wrap_label(panel, text=semantic.get("summary", ""), style="Body.TLabel", justify="left", font=self._font("SF Pro Display", 12, "bold")).pack(anchor="w", pady=(10, 8))
             rules = ttk.Frame(panel, style="Card.TFrame")
             rules.pack(fill="x")
             for title, value, column in (("旧规则", semantic.get("old_rule", ""), 0), ("新规则", semantic.get("new_rule", ""), 1)):
                 box = ttk.Frame(rules, style="Elevated.TFrame", padding=11)
                 box.grid(row=0, column=column, sticky="nsew", padx=(0, 5) if column == 0 else (5, 0))
                 rules.columnconfigure(column, weight=1)
-                ttk.Label(box, text=title, background=self.SURFACE_ALT, foreground=self.ORANGE, font=("SF Pro Text", 9, "bold")).pack(anchor="w")
-                ttk.Label(box, text=value or "尚未明确", background=self.SURFACE_ALT, foreground=self.TEXT, wraplength=310, justify="left").pack(anchor="w", pady=(4, 0))
+                ttk.Label(box, text=title, background=self.SURFACE_ALT, foreground=self.ORANGE, font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
+                self._wrap_label(box, text=value or "尚未明确", background=self.SURFACE_ALT, foreground=self.TEXT, justify="left").pack(anchor="w", pady=(4, 0))
             for title, key in (("改变的不变量", "changed_invariants"), ("受影响路径", "affected_paths"), ("剩余风险", "remaining_risks")):
                 values = semantic.get(key, [])
                 if values:
-                    ttk.Label(panel, text=title, style="Muted.TLabel", font=("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(10, 2))
-                    ttk.Label(panel, text="\n".join(f"•  {value}" for value in values), style="Body.TLabel", wraplength=700, justify="left").pack(anchor="w")
+                    ttk.Label(panel, text=title, style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(10, 2))
+                    self._wrap_label(panel, text="\n".join(f"•  {value}" for value in values), style="Body.TLabel", justify="left").pack(anchor="w")
             references = semantic.get("source_references", [])
             if references:
-                ttk.Label(panel, text="源码依据", style="Muted.TLabel", font=("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(10, 2))
+                ttk.Label(panel, text="源码依据", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(10, 2))
                 for reference in references:
                     line = reference.get("line")
                     label = f"↗ {reference.get('path', '')}{':' + str(line) if line else ''}"
@@ -1177,7 +1136,7 @@ def run_gui() -> int:
             shell = ttk.Frame(dialog, style="App.TFrame", padding=24)
             shell.pack(fill="both", expand=True)
             ttk.Label(shell, text="PREDICT BEFORE RUN", style="Eyebrow.TLabel").pack(anchor="w")
-            ttk.Label(shell, text="先预测，再看结果", style="Title.TLabel", font=("SF Pro Display", 22, "bold")).pack(anchor="w", pady=(4, 4))
+            ttk.Label(shell, text="先预测，再看结果", style="Title.TLabel", font=self._font("SF Pro Display", 22, "bold")).pack(anchor="w", pady=(4, 4))
             ttk.Label(shell, text="预测会被锁定，实验完成后 BugCompass 会把它和实际输出对照，避免事后解释。", style="PageSubtitle.TLabel", wraplength=590, justify="left").pack(anchor="w", pady=(0, 14))
             choice_var = tk.StringVar()
             options = [
@@ -1186,9 +1145,9 @@ def run_gui() -> int:
                 "会得到其他或无法判断的结果",
             ]
             for option in options:
-                tk.Radiobutton(shell, text=option, variable=choice_var, value=option, background=self.BACKGROUND, foreground=self.TEXT, activebackground=self.BACKGROUND, activeforeground=self.ORANGE, selectcolor=self.SURFACE_ALT, anchor="w", justify="left", wraplength=570, font=("SF Pro Text", 10)).pack(fill="x", pady=4)
-            ttk.Label(shell, text="为什么这样预测？", style="PageSubtitle.TLabel", font=("SF Pro Text", 10, "bold")).pack(anchor="w", pady=(14, 6))
-            rationale = tk.Text(shell, height=5, wrap="word", background=self.SURFACE_ALT, foreground=self.TEXT, insertbackground=self.TEXT, relief="flat", highlightthickness=1, highlightbackground=self.BORDER, highlightcolor=self.ORANGE, padx=12, pady=10, font=("SF Pro Text", 11))
+                tk.Radiobutton(shell, text=option, variable=choice_var, value=option, background=self.BACKGROUND, foreground=self.TEXT, activebackground=self.BACKGROUND, activeforeground=self.ORANGE, selectcolor=self.SURFACE_ALT, anchor="w", justify="left", wraplength=570, font=self._font("SF Pro Text", 10)).pack(fill="x", pady=4)
+            ttk.Label(shell, text="为什么这样预测？", style="PageSubtitle.TLabel", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w", pady=(14, 6))
+            rationale = tk.Text(shell, height=5, wrap="word", background=self.SURFACE_ALT, foreground=self.TEXT, insertbackground=self.TEXT, relief="flat", highlightthickness=1, highlightbackground=self.BORDER, highlightcolor=self.ORANGE, padx=12, pady=10, font=self._font("SF Pro Text", 11))
             rationale.pack(fill="both", expand=True)
             result: list[tuple[str, str]] = []
             row = ttk.Frame(shell, style="App.TFrame")
@@ -1220,9 +1179,9 @@ def run_gui() -> int:
             shell = ttk.Frame(dialog, style="App.TFrame", padding=24)
             shell.pack(fill="both", expand=True)
             ttk.Label(shell, text="YOUR DIAGNOSIS", style="Eyebrow.TLabel").pack(anchor="w")
-            ttk.Label(shell, text="提交你的根因判断", style="Title.TLabel", font=("SF Pro Display", 22, "bold")).pack(anchor="w", pady=(4, 4))
+            ttk.Label(shell, text="提交你的根因判断", style="Title.TLabel", font=self._font("SF Pro Display", 22, "bold")).pack(anchor="w", pady=(4, 4))
             ttk.Label(shell, text="写清楚你认为哪里错了、为什么，以及最重要的证据。提交后才能揭晓真实修复。", style="PageSubtitle.TLabel", wraplength=570, justify="left").pack(anchor="w", pady=(0, 14))
-            editor = tk.Text(shell, wrap="word", background=self.SURFACE_ALT, foreground=self.TEXT, insertbackground=self.TEXT, selectbackground="#654127", relief="flat", highlightthickness=1, highlightbackground=self.BORDER, highlightcolor=self.ORANGE, padx=14, pady=12, font=("SF Pro Text", 11))
+            editor = tk.Text(shell, wrap="word", background=self.SURFACE_ALT, foreground=self.TEXT, insertbackground=self.TEXT, selectbackground="#654127", relief="flat", highlightthickness=1, highlightbackground=self.BORDER, highlightcolor=self.ORANGE, padx=14, pady=12, font=self._font("SF Pro Text", 11))
             editor.pack(fill="both", expand=True)
             row = ttk.Frame(shell, style="App.TFrame")
             row.pack(fill="x", pady=(14, 0))
@@ -1258,7 +1217,7 @@ def run_gui() -> int:
             panel.pack(fill="x", pady=(12, 8))
             score_row = ttk.Frame(panel, style="Card.TFrame")
             score_row.pack(fill="x")
-            ttk.Label(score_row, text=f"{reveal.quality_total} / {reveal.quality_max}", style="Heading.TLabel", font=("SF Pro Display", 28, "bold"), foreground=self.ORANGE).pack(side="left")
+            ttk.Label(score_row, text=f"{reveal.quality_total} / {reveal.quality_max}", style="Heading.TLabel", font=self._font("SF Pro Display", 28, "bold"), foreground=self.ORANGE).pack(side="left")
             ttk.Label(score_row, text=f"用时 {reveal.elapsed_seconds // 60} 分 {reveal.elapsed_seconds % 60} 秒  ·  AI 运行 {reveal.ai_runs} 次", style="Muted.TLabel").pack(side="right")
             labels = {
                 "true_subsystem_in_top3": "前三路径命中真实子系统",
@@ -1271,14 +1230,14 @@ def run_gui() -> int:
                 row = ttk.Frame(panel, style="Elevated.TFrame", padding=(10, 7))
                 row.pack(fill="x", pady=3)
                 ttk.Label(row, text=label, background=self.SURFACE_ALT, foreground=self.TEXT).pack(side="left")
-                ttk.Label(row, text=f"{reveal.scores.get(key, 0)} / 2", background=self.SURFACE_ALT, foreground=self.ORANGE, font=("SF Pro Text", 10, "bold")).pack(side="right")
+                ttk.Label(row, text=f"{reveal.scores.get(key, 0)} / 2", background=self.SURFACE_ALT, foreground=self.ORANGE, font=self._font("SF Pro Text", 10, "bold")).pack(side="right")
             answer = reveal.answer
-            ttk.Label(panel, text="你的判断", style="Muted.TLabel", font=("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(16, 4))
-            ttk.Label(panel, text=reveal.submission, style="Body.TLabel", wraplength=720, justify="left").pack(anchor="w")
-            ttk.Label(panel, text="真实根因", style="Muted.TLabel", font=("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(16, 4))
-            ttk.Label(panel, text=answer.get("root_cause", ""), style="Body.TLabel", wraplength=720, justify="left").pack(anchor="w")
+            ttk.Label(panel, text="你的判断", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(16, 4))
+            self._wrap_label(panel, text=reveal.submission, style="Body.TLabel", justify="left").pack(anchor="w")
+            ttk.Label(panel, text="真实根因", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(16, 4))
+            self._wrap_label(panel, text=answer.get("root_cause", ""), style="Body.TLabel", justify="left").pack(anchor="w")
             ttk.Label(panel, text=f"修复 commit  {answer.get('fix_commit', '')[:12]}  ·  PR #{answer.get('pull_request', '')}", style="Status.TLabel").pack(anchor="w", pady=(12, 4))
-            ttk.Label(panel, text="真实相关文件\n" + "\n".join(f"•  {path}" for path in answer.get("relevant_files", [])), style="Body.TLabel", wraplength=720, justify="left").pack(anchor="w", pady=(5, 0))
+            self._wrap_label(panel, text="真实相关文件\n" + "\n".join(f"•  {path}" for path in answer.get("relevant_files", [])), style="Body.TLabel", justify="left").pack(anchor="w", pady=(5, 0))
 
         def _add_timeline(self, message: str) -> None:
             self.timeline.insert("end", message)
@@ -1314,24 +1273,24 @@ def run_gui() -> int:
             permission = experiment.get("permission", "red")
             frame = ttk.LabelFrame(parent, text=f"实验 {experiment.get('id', '')}", style="Dark.TLabelframe", padding=14)
             frame.pack(fill="x", pady=(12, 0))
-            ttk.Label(frame, text=experiment.get("title", "未命名实验"), style="Heading.TLabel", font=("SF Pro Display", 12, "bold")).pack(anchor="w")
-            ttk.Label(frame, text=f"目的  {experiment.get('purpose') or experiment.get('description', '')}", style="Body.TLabel", wraplength=670, justify="left").pack(anchor="w", pady=(5, 8))
+            ttk.Label(frame, text=experiment.get("title", "未命名实验"), style="Heading.TLabel", font=self._font("SF Pro Display", 12, "bold")).pack(anchor="w")
+            self._wrap_label(frame, text=f"目的  {experiment.get('purpose') or experiment.get('description', '')}", style="Body.TLabel", justify="left").pack(anchor="w", pady=(5, 8))
             command = experiment.get("command", [])
             command_box = ttk.Frame(frame, style="Elevated.TFrame", padding=10)
             command_box.pack(fill="x")
-            ttk.Label(command_box, text=f"$ {' '.join(command)}", background=self.SURFACE_ALT, foreground="#D6DAE2", font=("SF Mono", 9), wraplength=650, justify="left").pack(anchor="w")
-            ttk.Label(frame, text=f"{experiment.get('description', '')}\n工作目录  {experiment.get('cwd', '.')}  ·  预计 {experiment.get('estimated_seconds', '?')} 秒", style="Muted.TLabel", wraplength=670, justify="left").pack(anchor="w", pady=8)
-            ttk.Label(frame, text=f"●  {permission_names.get(permission, permission)}", background=self.SURFACE, foreground=colors.get(permission, colors["red"]), font=("SF Pro Text", 10, "bold")).pack(anchor="w")
+            self._wrap_label(command_box, text=f"$ {' '.join(command)}", background=self.SURFACE_ALT, foreground="#D6DAE2", font=self._font("SF Mono", 9), justify="left").pack(anchor="w")
+            self._wrap_label(frame, text=f"{experiment.get('description', '')}\n工作目录  {experiment.get('cwd', '.')}  ·  预计 {experiment.get('estimated_seconds', '?')} 秒", style="Muted.TLabel", justify="left").pack(anchor="w", pady=8)
+            ttk.Label(frame, text=f"●  {permission_names.get(permission, permission)}", background=self.SURFACE, foreground=colors.get(permission, colors["red"]), font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w")
             if experiment.get("result"):
-                ttk.Label(frame, text=f"上次结果  {experiment.get('result')}\n影响  {experiment.get('effect', 'pending')}", style="Body.TLabel", wraplength=670, justify="left").pack(anchor="w", pady=(8, 0))
+                self._wrap_label(frame, text=f"上次结果  {experiment.get('result')}\n影响  {experiment.get('effect', 'pending')}", style="Body.TLabel", justify="left").pack(anchor="w", pady=(8, 0))
             prediction = experiment.get("prediction", {})
             if prediction.get("predicted_at"):
                 prediction_box = ttk.Frame(frame, style="Elevated.TFrame", padding=10)
                 prediction_box.pack(fill="x", pady=(8, 0))
-                ttk.Label(prediction_box, text=f"你的运行前预测  {prediction.get('choice', '')}", background=self.SURFACE_ALT, foreground=self.ORANGE, font=("SF Pro Text", 10, "bold"), wraplength=640, justify="left").pack(anchor="w")
-                ttk.Label(prediction_box, text=prediction.get("rationale", ""), background=self.SURFACE_ALT, foreground=self.MUTED, wraplength=640, justify="left").pack(anchor="w", pady=(3, 0))
+                self._wrap_label(prediction_box, text=f"你的运行前预测  {prediction.get('choice', '')}", background=self.SURFACE_ALT, foreground=self.ORANGE, font=self._font("SF Pro Text", 10, "bold"), justify="left").pack(anchor="w")
+                self._wrap_label(prediction_box, text=prediction.get("rationale", ""), background=self.SURFACE_ALT, foreground=self.MUTED, justify="left").pack(anchor="w", pady=(3, 0))
                 if experiment.get("prediction_comparison"):
-                    ttk.Label(prediction_box, text=f"结果对照  {experiment.get('prediction_comparison')}", background=self.SURFACE_ALT, foreground=self.TEXT, wraplength=640, justify="left").pack(anchor="w", pady=(5, 0))
+                    self._wrap_label(prediction_box, text=f"结果对照  {experiment.get('prediction_comparison')}", background=self.SURFACE_ALT, foreground=self.TEXT, justify="left").pack(anchor="w", pady=(5, 0))
             ttk.Button(frame, text="运行实验  ▶", command=lambda e=experiment: self._approve_and_run_experiment(e), style="Action.TButton").pack(anchor="w", pady=(10, 0))
 
         def _approve_and_run_experiment(self, experiment: dict[str, Any]) -> None:
@@ -1425,6 +1384,293 @@ def run_gui() -> int:
             threading.Thread(target=worker, daemon=False).start()
             self.after(100, self._poll_events)
 
+        # ---------------------------------------------------------- 缩放与字体
+        def _font(self, family: str, size: int, *extra: str) -> tuple[str | Any, ...]:
+            """按当前界面缩放生成字体元组（含 DPI 感知的最低可读字号）。"""
+            factor = self.ui_scale.factor if hasattr(self, "ui_scale") else 1.0
+            scaled = max(6, int(round(size * factor)))
+            return (family, scaled, *extra)
+
+        def _apply_saved_ui_scale(self) -> None:
+            saved = int(self.settings.get("ui_scale_percent", 100) or 100)
+            self.ui_scale.set_percent(saved)
+            # 系统真实 DPI（96=100%）作为基线，用户缩放在其上叠加。
+            apply_scaling(self, extra=max(0.5, self.ui_scale.factor))
+
+        def _on_cards_zoom(self, step: int) -> None:
+            """Ctrl+滚轮（结果页卡片区域）：整体界面缩放。"""
+            self._zoom_ui(step)
+
+        def _zoom_ui(self, step: int) -> None:
+            previous = self.ui_scale.percent
+            percent = self.ui_scale.step(step)
+            if percent == previous:
+                return
+            self.settings["ui_scale_percent"] = percent
+            save_settings(self.settings)
+            apply_scaling(self, extra=max(0.5, self.ui_scale.factor))
+            self._configure_styles(self._ttk_module)
+            self._refresh_zoomable_content()
+            self.result_hint_var.set(f"界面缩放 {percent}%（已保存，重启后仍生效）")
+
+        def _refresh_zoomable_content(self) -> None:
+            # 结果页会整体重建；其他页面只更新样式字体，输入内容不受影响。
+            if self.current_case is not None:
+                try:
+                    self._show_case(self.controller.load_case(self.current_case.case_id))
+                    return
+                except BugCompassError:
+                    pass
+
+        def _wrap_label(self, parent: Any, **kwargs: Any) -> Any:
+            """创建卡片里的自适应换行标签（窗口变窄/DPI 变化时不会被裁切）。"""
+            label = ttk.Label(parent, **kwargs)
+            self.cards_scroll.wrap_here(label)
+            return label
+
+        # -------------------------------------------------------------- 指标
+        def _render_metrics_card(self, view: CaseView) -> None:
+            panel = ttk.LabelFrame(self.cards_host, text="运行指标 · 本地保存", style="Dark.TLabelframe", padding=14)
+            panel.pack(fill="x", pady=(0, 10))
+            try:
+                pricing = load_pricing(view.workspace_path)
+                metrics = collect_case_metrics(view.case_dir, pricing=pricing)
+                write_case_metrics(view.case_dir, metrics)
+            except Exception:
+                pricing, metrics = {}, None
+            header = ttk.Frame(panel, style="Card.TFrame")
+            header.pack(fill="x")
+            if metrics is None or not metrics.runs:
+                ttk.Label(header, text="还没有 Codex 运行记录；运行后这里会显示模型、耗时、工具轮次与成本。", style="Muted.TLabel").pack(anchor="w")
+                return
+            totals = metrics.to_dict()["totals"]
+            models = "、".join(metrics.models) or "未知"
+            runs = len(metrics.runs)
+            self._wrap_label(header, text=f"模型  {models}   ·   运行 {runs} 次", style="Heading.TLabel").pack(anchor="w")
+            grid = ttk.Frame(panel, style="Card.TFrame")
+            grid.pack(fill="x", pady=(8, 0))
+            columns = (
+                ("累计耗时", format_duration(totals["duration_seconds"])),
+                ("对话轮次", str(totals["turns"])),
+                ("工具调用", str(totals["tool_calls"])),
+                ("输入 token", f"{totals['input_tokens']:,}（缓存 {totals['cached_input_tokens']:,}）"),
+                ("输出 token", f"{totals['output_tokens']:,}"),
+                ("估计成本", format_cost(totals["estimated_cost_usd"])),
+            )
+            for index, (name, value) in enumerate(columns):
+                box = ttk.Frame(grid, style="Elevated.TFrame", padding=(10, 7))
+                box.grid(row=index // 3, column=index % 3, sticky="ew", padx=4, pady=3)
+                grid.columnconfigure(index % 3, weight=1)
+                ttk.Label(box, text=name, background=self.SURFACE_ALT, foreground=self.MUTED, font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
+                ttk.Label(box, text=value, background=self.SURFACE_ALT, foreground=self.TEXT, font=self._font("SF Pro Text", 11, "bold")).pack(anchor="w", pady=(2, 0))
+            telemetry_state = "已开启（仅计数，且需再手动导出才会离开本机）" if telemetry_enabled() else "未开启"
+            self._wrap_label(
+                panel,
+                text=f"成本按 ~/.bugcompass/pricing.json 里你填写的单价估算；未配置的模型显示“未配置单价”，不会凭空估算。统计上报：{telemetry_state}。",
+                style="Muted.TLabel",
+                justify="left",
+            ).pack(anchor="w", pady=(8, 0))
+
+        def _record_run_metrics(self, view: CaseView) -> None:
+            """运行结束后把聚合指标写进本地 metrics.json；上报默认关闭。"""
+            try:
+                pricing = load_pricing(view.workspace_path)
+                metrics = collect_case_metrics(view.case_dir, pricing=pricing)
+                write_case_metrics(view.case_dir, metrics)
+            except Exception:
+                return
+            if not telemetry_enabled() or not metrics.runs:
+                return
+            latest = metrics.runs[-1]
+            record_run_metrics(
+                case_id=latest.case_id or view.case_id,
+                model=latest.model,
+                duration_seconds=latest.duration_seconds,
+                turns=latest.turns,
+                tool_calls=latest.tool_calls,
+                input_tokens=latest.input_tokens,
+                output_tokens=latest.output_tokens,
+                estimated_cost_usd=latest.estimated_cost_usd,
+                status=latest.status,
+            )
+
+        # -------------------------------------------------------------- 备份
+        def _backup_workspace(self) -> None:
+            if self.current_case is None:
+                self.message_box.showinfo("备份", "请先打开一个案件（备份会打包整个工作区）。", parent=self)
+                return
+            try:
+                target = create_backup(self.current_case.workspace_path, note=f"GUI 导出 · v{__version__}")
+            except (BackupError, OSError) as exc:
+                self.message_box.showerror("备份失败", str(exc), parent=self)
+                return
+            if self.message_box.askyesno("备份完成", f"备份已保存：\n{target}\n\n是否打开所在文件夹？", parent=self):
+                self._open_path_in_explorer(target)
+            self.result_hint_var.set("工作区备份完成。")
+
+        def _restore_backup_dialog(self) -> None:
+            archive = self.file_dialog.askopenfilename(
+                title="选择 BugCompass 备份文件",
+                filetypes=[("BugCompass 备份", "*.zip"), ("所有文件", "*.*")],
+                parent=self,
+            )
+            if not archive:
+                return
+            try:
+                manifest = inspect_backup(archive)
+            except (BackupError, OSError) as exc:
+                self.message_box.showerror("备份无效", str(exc), parent=self)
+                return
+            count = manifest.get("file_count", "?")
+            created = str(manifest.get("created_at", "未知"))[:19].replace("T", " ")
+            version = manifest.get("app_version", "未知")
+            target_dir = self.file_dialog.askdirectory(title=f"恢复到哪个文件夹？（备份：{count} 个文件 · v{version} · {created}）", parent=self)
+            if not target_dir:
+                return
+            try:
+                destination = restore_backup(archive, target_dir)
+            except (BackupError, OSError) as exc:
+                self.message_box.showerror("恢复失败", str(exc), parent=self)
+                return
+            migrations = ""
+            self.message_box.showinfo(
+                "恢复完成",
+                f"工作区已恢复到：\n{destination}\n\n迁移记录见工作区内的 backup-manifest.json。{migrations}",
+                parent=self,
+            )
+
+        def _export_diagnostics(self) -> None:
+            include_case = self.message_box.askyesno(
+                "诊断包内容",
+                "诊断包包含：崩溃日志、环境摘要、设置（已脱敏）。\n\n是否额外包含当前案件的结构信息（只有计数与状态，不含问题描述、证据正文或源码）？",
+                parent=self,
+            )
+            dest = self.file_dialog.askdirectory(title="诊断包保存到哪个文件夹？", parent=self)
+            if not dest:
+                return
+            try:
+                target = export_bundle(
+                    dest,
+                    root=self,
+                    case_dir=self.current_case.case_dir if self.current_case else None,
+                    include_case_structure=include_case,
+                )
+            except Exception as exc:
+                self.message_box.showerror("导出失败", f"无法生成诊断包：{exc}", parent=self)
+                return
+            if self.message_box.askyesno("导出完成", f"诊断包已保存（已自动脱敏并通过自检）：\n{target}\n\n是否打开所在文件夹？", parent=self):
+                self._open_path_in_explorer(target)
+
+        def _open_path_in_explorer(self, path: Any) -> None:
+            import subprocess as _sp
+            import sys as _sys
+            try:
+                if _sys.platform == "win32":
+                    _sp.Popen(["explorer", "/select,", str(path)])
+                elif _sys.platform == "darwin":
+                    _sp.Popen(["open", "-R", str(path)])
+                else:
+                    _sp.Popen(["xdg-open", str(Path(path).parent)])
+            except OSError:
+                pass
+
+        # -------------------------------------------------------------- 设置
+        def _open_settings(self) -> None:
+            dialog = tk.Toplevel(self)
+            dialog.title("设置")
+            dialog.geometry("620x560")
+            dialog.minsize(560, 520)
+            dialog.configure(background=self.BACKGROUND)
+            dialog.transient(self)
+            dialog.grab_set()
+            shell = ttk.Frame(dialog, style="App.TFrame", padding=24)
+            shell.pack(fill="both", expand=True)
+            ttk.Label(shell, text="SETTINGS", style="Eyebrow.TLabel").pack(anchor="w")
+            ttk.Label(shell, text="设置", style="Title.TLabel", font=self._font("SF Pro Display", 22, "bold")).pack(anchor="w", pady=(4, 10))
+            ttk.Label(shell, text=f"BugCompass v{__version__} · 设置保存在本地（~/.bugcompass/settings.json）", style="Muted.TLabel").pack(anchor="w", pady=(0, 14))
+
+            # 界面缩放
+            zoom_box = ttk.Frame(shell, style="Surface.TFrame", padding=14)
+            zoom_box.pack(fill="x")
+            ttk.Label(zoom_box, text="界面缩放", style="Heading.TLabel").pack(anchor="w")
+            ttk.Label(zoom_box, text=f"当前系统 DPI 缩放：约 {scale_percent(self)}%。使用 Ctrl + 滚轮 也可以随时调整。", style="Muted.TLabel").pack(anchor="w", pady=(3, 8))
+            zoom_var = tk.IntVar(value=self.ui_scale.percent)
+            zoom_label = ttk.Label(zoom_box, text=f"{self.ui_scale.percent}%", style="Status.TLabel")
+            zoom_label.pack(anchor="w")
+            zoom_slider = tk.Scale(
+                zoom_box, variable=zoom_var, from_=UiScale.MIN, to=UiScale.MAX,
+                orient="horizontal", resolution=5,
+                background=self.SURFACE, foreground=self.TEXT,
+                troughcolor=self.SURFACE_ALT, highlightthickness=0, bd=0,
+                length=440,
+            )
+            zoom_slider.pack(fill="x")
+
+            # 统计上报（默认关闭）
+            tele_box = ttk.Frame(shell, style="Surface.TFrame", padding=14)
+            tele_box.pack(fill="x", pady=(10, 0))
+            ttk.Label(tele_box, text="统计上报", style="Heading.TLabel").pack(anchor="w")
+            ttk.Label(
+                tele_box,
+                text="默认关闭。开启后也只会在本地记录聚合计数（模型、耗时、轮次、token、成本），\n"
+                     "不会记录问题描述、证据、源码路径或文件内容；数据只有在“导出待发数据”后才可能离开本机。",
+                style="Muted.TLabel", justify="left",
+            ).pack(anchor="w", pady=(3, 8))
+            tele_var = tk.BooleanVar(value=telemetry_enabled())
+            tk.Checkbutton(
+                tele_box, text="我了解并主动开启本地统计记录", variable=tele_var,
+                background=self.SURFACE, foreground=self.TEXT,
+                activebackground=self.SURFACE, activeforeground=self.TEXT,
+                selectcolor=self.SURFACE_ALT, anchor="w",
+            ).pack(anchor="w")
+            pending_count = len(telemetry_pending())
+            ttk.Label(tele_box, text=f"本地待发事件：{pending_count} 条", style="Muted.TLabel").pack(anchor="w", pady=(6, 4))
+            tele_row = ttk.Frame(tele_box, style="Surface.TFrame")
+            tele_row.pack(anchor="w")
+
+            def export_tele() -> None:
+                from .resources import user_root
+
+                target = export_telemetry_pending(user_root())
+                self.message_box.showinfo(
+                    "导出待发数据",
+                    f"已导出到：\n{target}\n\n请自行检查内容后再决定是否发送。" if target else "当前没有待发事件。",
+                    parent=dialog,
+                )
+
+            def clear_tele() -> None:
+                removed = clear_telemetry_pending()
+                self.message_box.showinfo("清空待发数据", f"已清空 {removed} 条本地待发事件。", parent=dialog)
+
+            ttk.Button(tele_row, text="导出待发数据", command=export_tele, style="Action.TButton").pack(side="left")
+            ttk.Button(tele_row, text="清空待发数据", command=clear_tele, style="Ghost.TButton").pack(side="left", padx=(8, 0))
+
+            # 数据目录
+            data_row = ttk.Frame(shell, style="App.TFrame")
+            data_row.pack(fill="x", pady=(14, 0))
+            from .resources import logs_dir, user_root
+
+            ttk.Label(data_row, text=f"数据目录：{user_root()}", style="Muted.TLabel").pack(side="left")
+            ttk.Button(data_row, text="打开", command=lambda: self._open_path_in_explorer(logs_dir()), style="Ghost.TButton").pack(side="left", padx=(8, 0))
+
+            def save() -> None:
+                percent = int(zoom_var.get())
+                self.settings["ui_scale_percent"] = percent
+                self.settings["telemetry_enabled"] = bool(tele_var.get())
+                save_settings(self.settings)
+                set_telemetry_enabled(bool(tele_var.get()))
+                if percent != self.ui_scale.percent:
+                    self.ui_scale.set_percent(percent)
+                    apply_scaling(self, extra=max(0.5, self.ui_scale.factor))
+                    self._configure_styles(self._ttk_module)
+                    self._refresh_zoomable_content()
+                dialog.destroy()
+
+            row = ttk.Frame(shell, style="App.TFrame")
+            row.pack(fill="x", pady=(16, 0))
+            ttk.Button(row, text="取消", command=dialog.destroy, style="Ghost.TButton").pack(side="right")
+            ttk.Button(row, text="保存  →", command=save, style="Primary.TButton").pack(side="right", padx=(0, 8))
+
         def _refresh_current_case(self) -> None:
             if self.current_case is None:
                 return
@@ -1517,5 +1763,7 @@ def run_gui() -> int:
             f"请换用带完整 Tk 支持的 Python，并在本地图形桌面中启动。详情：{detail}"
         )
         return 2
+    if codex_warning is not None:
+        messagebox.showwarning("Codex CLI 未安装", codex_warning, parent=app)
     app.mainloop()
     return 0
