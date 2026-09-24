@@ -41,7 +41,8 @@ from .telemetry import (
     record_run_metrics,
     set_enabled as set_telemetry_enabled,
 )
-from .widgets import MouseWheelRouter, ScrollableFrame, UiScale
+from .widgets import MouseWheelRouter, ScrollableFrame, UiScale, fit_dialog
+from .llm import list_models, provider_by_id, set_provider_model
 from .workspace import BugCompassError
 
 
@@ -1279,8 +1280,7 @@ def run_gui() -> int:
         def _ask_experiment_prediction(self, experiment: dict[str, Any]) -> tuple[str, str] | None:
             dialog = tk.Toplevel(self)
             dialog.title(tr("运行前预测"))
-            dialog.geometry("650x500")
-            dialog.minsize(560, 440)
+            self.after_idle(lambda d=dialog: self._fit_dialog(d, 560, 440))
             dialog.configure(background=self.BACKGROUND)
             dialog.transient(self)
             dialog.grab_set()
@@ -1322,8 +1322,7 @@ def run_gui() -> int:
                 return
             dialog = tk.Toplevel(self)
             dialog.title(tr("提交根因判断"))
-            dialog.geometry("640x430")
-            dialog.minsize(540, 360)
+            self.after_idle(lambda d=dialog: self._fit_dialog(d, 540, 360))
             dialog.configure(background=self.BACKGROUND)
             dialog.transient(self)
             dialog.grab_set()
@@ -1751,8 +1750,7 @@ def run_gui() -> int:
 
             dialog = tk.Toplevel(self)
             dialog.title(tr('可复现报告包 · {}').format(case_id))
-            dialog.geometry("750x740")
-            dialog.minsize(650, 620)
+            self.after_idle(lambda d=dialog: self._fit_dialog(d, 650, 620))
             dialog.configure(background=self.BACKGROUND)
             dialog.transient(self)
             dialog.grab_set()
@@ -2004,8 +2002,7 @@ def run_gui() -> int:
 
             dialog = tk.Toplevel(self)
             dialog.title(tr("AI 挑选 Issue — Blender tracker 筛选"))
-            dialog.geometry("1020x700")
-            dialog.minsize(880, 600)
+            self.after_idle(lambda d=dialog: self._fit_dialog(d, 880, 600))
             dialog.configure(background=self.BACKGROUND)
             dialog.transient(self)
             self._scout_dialog = dialog
@@ -2386,9 +2383,21 @@ def run_gui() -> int:
 
                 def work() -> None:
                     ok, message = test_connection(provider)
+                    try:
+                        from datetime import datetime as _dt
+
+                        from .resources import logs_dir
+
+                        log_path = logs_dir() / "llm-test.log"
+                        log_path.parent.mkdir(parents=True, exist_ok=True)
+                        with log_path.open("a", encoding="utf-8") as fh:
+                            fh.write(f"{_dt.now().isoformat(timespec='seconds')}  {provider.id}  {provider.model}  {'OK' if ok else 'FAIL'}  {message}\n")
+                    except OSError:
+                        pass
 
                     def apply() -> None:
-                        status_var.set((tr("✅ 密钥已保存，连接成功") if ok else "❌ ") + message)
+                        suffix = "" if ok else tr("（详情已记录到 ~/.bugcompass/logs/llm-test.log）")
+                        status_var.set((tr("✅ 密钥已保存，连接成功") if ok else "❌ ") + message + suffix)
                         self._refresh_engine_key_button()
 
                     self._main_queue.put(apply)
@@ -2410,12 +2419,8 @@ def run_gui() -> int:
             self._fit_dialog(dialog, 580, 420)
 
         def _fit_dialog(self, dialog: Any, min_width: int, min_height: int) -> None:
-            """对话框自动适应内容：内容多时放大到装得下（不再裁掉底部按钮），超出屏幕则封顶。"""
-            dialog.update_idletasks()
-            width = max(min_width, dialog.winfo_reqwidth())
-            height = min(max(min_height, dialog.winfo_reqheight() + 12), dialog.winfo_screenheight() - 80)
-            dialog.geometry(f"{width}x{height}")
-            dialog.minsize(min_width, min_height)
+            """对话框自动适应内容（公共实现在 widgets.fit_dialog）。"""
+            fit_dialog(dialog, min_width, min_height)
 
         # -------------------------------------------------------------- 设置
         def _open_settings(self) -> None:
@@ -2525,6 +2530,79 @@ def run_gui() -> int:
                         self.engine_var.set(provider.display_name)
                     self._llm_status_var.set(tr('已设为当前引擎：{}').format(provider.display_name))
 
+                ttk.Label(llm_row, text=tr("模型"), style="Muted.TLabel").pack(side="left", padx=(14, 6))
+                self._llm_model_var = tk.StringVar(value=chosen_provider().model)
+                model_combo = ttk.Combobox(llm_row, textvariable=self._llm_model_var, values=chosen_provider().model_options, width=22, style="Dark.TCombobox")
+                model_combo.pack(side="left")
+
+                def apply_model_change(*_args: Any) -> None:
+                    model = self._llm_model_var.get().strip()
+                    provider = chosen_provider()
+                    if not model or model == provider.model:
+                        return
+                    try:
+                        self.llm_providers = set_provider_model(provider.id, model)
+                    except LLMError as exc:
+                        self._llm_status_var.set(str(exc))
+                        return
+                    updated = provider_by_id(self.llm_providers, provider.id)
+                    if updated is not None:
+                        self._llm_model_var.set(updated.model)
+                        model_combo.configure(values=updated.model_options)
+                    if hasattr(self, "engine_combo"):
+                        self.engine_combo.configure(values=self._engine_options())
+                        if str(self.settings.get("active_engine")) == provider.id and updated is not None:
+                            self.engine_var.set(updated.display_name)
+                    self._llm_status_var.set(tr('模型已保存：{}').format(model))
+
+                model_combo.bind("<FocusOut>", apply_model_change)
+                model_combo.bind("<Return>", apply_model_change)
+                model_combo.bind("<<ComboboxSelected>>", apply_model_change)
+                fetch_models_btn = ttk.Button(llm_row, text=tr("⟳ 拉取模型"), style="Ghost.TButton")
+
+                def fetch_models() -> None:
+                    provider = chosen_provider()
+                    fetch_models_btn.configure(state="disabled")
+                    self._llm_status_var.set(tr("正在从 {} 获取模型列表……").format(provider.label))
+
+                    def work() -> None:
+                        try:
+                            models = list_models(provider)
+                        except LLMError as exc:
+                            message = str(exc)
+
+                            def apply_fail() -> None:
+                                self._llm_status_var.set(message)
+                                fetch_models_btn.configure(state="normal")
+
+                            self._main_queue.put(apply_fail)
+                            return
+
+                        def apply_ok() -> None:
+                            fetch_models_btn.configure(state="normal")
+                            if not models:
+                                self._llm_status_var.set(tr("服务没有返回任何模型。"))
+                                return
+                            model_combo.configure(values=models)
+                            current = self._llm_model_var.get().strip()
+                            if current and current not in models:
+                                # 当前模型已不在服务列表（如已退役）→ 自动切换并保存
+                                new_model = next((m for m in models if "flash" in m or "mini" in m), models[0])
+                                self._llm_model_var.set(new_model)
+                                try:
+                                    self.llm_providers = set_provider_model(provider.id, new_model)
+                                except LLMError:
+                                    pass
+                                self._llm_status_var.set(tr("当前模型已不在服务列表中，已切换为：{}").format(new_model))
+                            else:
+                                self._llm_status_var.set(tr("已从服务获取 {} 个模型。").format(len(models)))
+
+                        self._main_queue.put(apply_ok)
+
+                    threading.Thread(target=work, daemon=True).start()
+
+                fetch_models_btn.configure(command=fetch_models)
+                fetch_models_btn.pack(side="left", padx=(8, 0))
                 ttk.Button(llm_row, text=tr("测试连接"), command=run_test, style="Action.TButton").pack(side="left", padx=(10, 0))
                 ttk.Button(llm_row, text=tr("设为当前引擎"), command=use_provider, style="Action.TButton").pack(side="left", padx=(8, 0))
                 import_btn = ttk.Button(llm_row, text=tr("导入密钥…"), style="Primary.TButton")
@@ -2534,6 +2612,8 @@ def run_gui() -> int:
 
                 def refresh_provider_ui(*_args: Any) -> None:
                     chosen = chosen_provider()
+                    self._llm_model_var.set(chosen.model)
+                    model_combo.configure(values=chosen.model_options)
                     if chosen.needs_key:
                         import_btn.configure(state="normal", command=lambda: self._import_api_key_dialog(chosen))
                         stored = tr("已导入 ✓") if get_key(chosen.id) else tr("未导入")

@@ -27,7 +27,7 @@ Requirements: Python 3.10+, Tkinter (bundled with most Python distributions). Fo
 
 ### Using your own model API (zero terminal)
 
-⚙ Settings → Model Services → pick a provider → **Import key…** → **Test connection** → **Set as active engine**. A default provider list is auto-created on first launch — no terminal needed. Keys are stored in the macOS Keychain (or a `chmod 600` file elsewhere), never in `providers.json`, backups, diagnostics bundles, or telemetry.
+⚙ Settings → Model Services → pick a provider → **Import key…** → **Test connection** → **Set as active engine**. A default provider list is auto-created on first launch — no terminal needed. **Pick a different model from the dropdown in ⚙ Settings → Model Services — or type any model name. Click “⟳ Fetch models” to pull the live list of models your account can actually use (always current).** Keys are stored in the macOS Keychain (or a `chmod 600` file elsewhere), never in `providers.json`, backups, diagnostics bundles, or telemetry.
 
 ### AI Issue Scout
 

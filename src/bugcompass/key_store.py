@@ -113,10 +113,16 @@ def save_key(provider_id: str, secret: str) -> str:
     """保存密钥，返回实际使用的存储模式（keychain / file）。"""
     if not secret or not secret.strip():
         raise KeyStoreError("密钥不能为空。")
+    secret = secret.strip()
     if storage_mode() == MODE_KEYCHAIN:
         try:
-            _keychain_add(provider_id, secret.strip())
-            return MODE_KEYCHAIN
+            _keychain_add(provider_id, secret)
+            # 回读验证：macOS 钥匙串存在“写入成功但读取被 ACL 拒绝”的边界情况，
+            # 一旦回读不一致立即退回文件模式，避免“保存成功却连不上”的迷案。
+            if _keychain_get(provider_id) == secret:
+                return MODE_KEYCHAIN
+            # 回读不一致：清掉坏条目再退回文件模式，避免之后读到旧值。
+            _keychain_delete(provider_id)
         except KeyStoreError:
             pass  # 钥匙串不可用（如无图形会话）→ 退回文件模式
     keys = _read_file_store()

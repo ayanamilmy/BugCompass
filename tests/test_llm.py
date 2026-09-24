@@ -542,5 +542,126 @@ class EnsureProvidersTests(IsolatedHomeTestCase):
         self.assertEqual([provider.id for provider in providers], ["custom"])  # 不覆盖
 
 
+class ModelSelectionTests(IsolatedHomeTestCase):
+    """模型可选：预设建议 + set_provider_model 持久化（只动配置，不动密钥）。"""
+
+    def test_presets_have_model_options(self) -> None:
+        providers = ensure_providers()
+        by_id = {provider.id: provider for provider in providers}
+        self.assertIn("deepseek-v4-pro", by_id["deepseek"].model_options)
+        self.assertIn("qwen3.8-flash", by_id["qwen"].model_options)
+
+    def test_set_provider_model_persists(self) -> None:
+        ensure_providers()
+        providers = llm.set_provider_model("deepseek", "deepseek-reasoner")
+        self.assertEqual(next(p for p in providers if p.id == "deepseek").model, "deepseek-reasoner")
+        reloaded = llm.load_providers()
+        self.assertEqual(next(p for p in reloaded if p.id == "deepseek").model, "deepseek-reasoner")
+        # 其他服务不受影响
+        self.assertEqual(next(p for p in reloaded if p.id == "qwen").model, "qwen3.8-max")
+
+    def test_custom_model_appended_to_options(self) -> None:
+        ensure_providers()
+        providers = llm.set_provider_model("deepseek", "my-custom-finetune")
+        deepseek = next(p for p in providers if p.id == "deepseek")
+        self.assertEqual(deepseek.model, "my-custom-finetune")
+        self.assertIn("my-custom-finetune", deepseek.model_options)
+
+    def test_set_provider_model_rejects_bad_input(self) -> None:
+        ensure_providers()
+        with self.assertRaises(llm.LLMError):
+            llm.set_provider_model("deepseek", "   ")
+        with self.assertRaises(llm.LLMError):
+            llm.set_provider_model("no-such-provider", "m")
+
+    def test_model_options_roundtrip(self) -> None:
+        provider = llm.LLMProviderConfig(
+            id="x", label="X", base_url="https://e.test/v1", model="m1", model_options=["m1", "m2"],
+        )
+        restored = llm._provider_from_dict(provider.to_dict())
+        self.assertEqual(restored.model_options, ["m1", "m2"])
+
+
+class ListModelsTests(IsolatedHomeTestCase):
+    """「拉取模型」：GET /models 实时获取（mock 网络，测试不联网）。"""
+
+    def _provider(self, *, api_key_env: str = "TEST_LIST_MODELS_KEY") -> llm.LLMProviderConfig:
+        return llm.LLMProviderConfig(
+            id="test", label="测试", base_url="https://example.test/v1",
+            model="m", api_key_env=api_key_env,
+        )
+
+    def test_parses_sorts_and_dedups(self) -> None:
+        import urllib.request
+
+        requests_seen: list[urllib.request.Request] = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self) -> bytes:
+                return json.dumps({"data": [{"id": "zz-v4"}, {"id": "aa-v2"}, {"id": "aa-v2"}, {"id": "  "}, "not-a-dict"]}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=None):
+            requests_seen.append(request)
+            return Response()
+
+        with mock.patch.dict(os.environ, {"TEST_LIST_MODELS_KEY": "sk-x"}), \
+             mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            models = llm.list_models(self._provider())
+        self.assertEqual(models, ["aa-v2", "zz-v4"])
+        self.assertTrue(requests_seen[0].full_url.endswith("/models"))
+        self.assertEqual(requests_seen[0].get_header("Authorization"), "Bearer sk-x")
+
+    def test_local_provider_sends_no_auth(self) -> None:
+        import urllib.request
+
+        requests_seen: list[urllib.request.Request] = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self) -> bytes:
+                return json.dumps({"data": [{"id": "llama3.1:8b"}]}).encode("utf-8")
+
+        def fake_urlopen(request, timeout=None):
+            requests_seen.append(request)
+            return Response()
+
+        provider = self._provider(api_key_env="")
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            models = llm.list_models(provider)
+        self.assertEqual(models, ["llama3.1:8b"])
+        self.assertIsNone(requests_seen[0].get_header("Authorization"))
+
+    def test_missing_key_gives_guidance_without_request(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "TEST_LIST_MODELS_KEY"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch("urllib.request.urlopen", side_effect=AssertionError("不应发起请求")):
+            with self.assertRaises(llm.LLMError) as ctx:
+                llm.list_models(self._provider())
+        self.assertIn("密钥", str(ctx.exception))
+
+    def test_http_401_is_friendly(self) -> None:
+        import urllib.error
+
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
+
+        with mock.patch.dict(os.environ, {"TEST_LIST_MODELS_KEY": "sk-bad"}), \
+             mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(llm.LLMError) as ctx:
+                llm.list_models(self._provider())
+        self.assertIn("拒绝了密钥", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

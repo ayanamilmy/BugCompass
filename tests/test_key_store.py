@@ -97,23 +97,52 @@ class KeychainModeTests(unittest.TestCase):
 
     def test_save_and_get_via_keychain(self) -> None:
         saved_commands: list[list[str]] = []
+        stored: dict[str, str] = {}
 
         def fake_run(command, **kwargs):
             saved_commands.append(list(command))
             if command[1] == "add-generic-password":
+                stored[command[command.index("-a") + 1]] = command[command.index("-w") + 1]
                 return subprocess.CompletedProcess(command, 0, "", "")
             if command[1] == "find-generic-password" and "-w" in command:
-                return subprocess.CompletedProcess(command, 0, "sk-from-keychain\n", "")
+                account = command[command.index("-a") + 1]
+                return subprocess.CompletedProcess(command, 0, stored.get(account, "") + "\n", "")
             return subprocess.CompletedProcess(command, 0, "", "")
 
         with mock.patch.object(key_store.subprocess, "run", side_effect=fake_run):
             mode = key_store.save_key("deepseek", "sk-secret-value")
-            self.assertEqual(mode, "keychain")
+            self.assertEqual(mode, "keychain")  # 回读一致 → 钥匙串模式成立
             value = key_store.get_key("deepseek")
-        self.assertEqual(value, "sk-from-keychain")
+        self.assertEqual(value, "sk-secret-value")
         add_command = next(c for c in saved_commands if c[1] == "add-generic-password")
         self.assertIn("-w", add_command)
         self.assertIn("sk-secret-value", add_command)  # 确实传给了钥匙串
+
+    def test_readback_mismatch_falls_back_to_file(self) -> None:
+        """钥匙串写入成功但回读不一致（ACL 拒读等）→ 退回文件模式，保证后续可用。"""
+
+        # 写入集合（add 实际写入）与可见集合（find 能读到的）分离：
+        # 模拟「写入成功，但读取路径只能看到旧的损坏条目」的钥匙串异常。
+        added: dict[str, str] = {}
+        visible: dict[str, str] = {"deepseek": "旧值-已损坏"}
+
+        def fake_run(command, **kwargs):
+            if command[1] == "add-generic-password":
+                added[command[command.index("-a") + 1]] = command[command.index("-w") + 1]
+                return subprocess.CompletedProcess(command, 0, "", "")
+            if command[1] == "delete-generic-password":
+                visible.pop(command[command.index("-a") + 1], None)
+                return subprocess.CompletedProcess(command, 0, "", "")
+            if command[1] == "find-generic-password" and "-w" in command:
+                account = command[command.index("-a") + 1]
+                return subprocess.CompletedProcess(command, 0, visible.get(account, "") + "\n", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(key_store.subprocess, "run", side_effect=fake_run):
+            mode = key_store.save_key("deepseek", "sk-real-secret")
+            self.assertEqual(mode, "file")
+            # 坏条目已被清除，读取走文件兜底
+            self.assertEqual(key_store.get_key("deepseek"), "sk-real-secret")
 
     def test_keychain_failure_falls_back_to_file_without_leaking(self) -> None:
         def failing_run(command, **kwargs):

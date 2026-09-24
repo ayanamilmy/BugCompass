@@ -283,3 +283,15 @@ class UiScale:
             self.root.option_add(f"*{name}", (family, scaled, *extra))
         except Exception:  # pragma: no cover
             pass
+
+
+def fit_dialog(dialog: Any, min_width: int, min_height: int) -> None:
+    """对话框自动适应内容：内容多时放大到装得下，超出屏幕则封顶。
+
+    所有 Toplevel 对话框禁止写死 geometry，统一走这里（AGENTS.md 规则）。
+    """
+    dialog.update_idletasks()
+    width = max(min_width, dialog.winfo_reqwidth())
+    height = min(max(min_height, dialog.winfo_reqheight() + 12), dialog.winfo_screenheight() - 80)
+    dialog.geometry(f"{width}x{height}")
+    dialog.minsize(min_width, min_height)
