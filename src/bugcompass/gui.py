@@ -42,7 +42,7 @@ from .telemetry import (
     set_enabled as set_telemetry_enabled,
 )
 from .widgets import MouseWheelRouter, ScrollableFrame, UiScale, fit_dialog
-from .llm import set_provider_model, provider_by_id
+from .llm import list_models, provider_by_id, set_provider_model
 from .workspace import BugCompassError
 
 
@@ -2558,6 +2558,51 @@ def run_gui() -> int:
                 model_combo.bind("<FocusOut>", apply_model_change)
                 model_combo.bind("<Return>", apply_model_change)
                 model_combo.bind("<<ComboboxSelected>>", apply_model_change)
+                fetch_models_btn = ttk.Button(llm_row, text=tr("⟳ 拉取模型"), style="Ghost.TButton")
+
+                def fetch_models() -> None:
+                    provider = chosen_provider()
+                    fetch_models_btn.configure(state="disabled")
+                    self._llm_status_var.set(tr("正在从 {} 获取模型列表……").format(provider.label))
+
+                    def work() -> None:
+                        try:
+                            models = list_models(provider)
+                        except LLMError as exc:
+                            message = str(exc)
+
+                            def apply_fail() -> None:
+                                self._llm_status_var.set(message)
+                                fetch_models_btn.configure(state="normal")
+
+                            self._main_queue.put(apply_fail)
+                            return
+
+                        def apply_ok() -> None:
+                            fetch_models_btn.configure(state="normal")
+                            if not models:
+                                self._llm_status_var.set(tr("服务没有返回任何模型。"))
+                                return
+                            model_combo.configure(values=models)
+                            current = self._llm_model_var.get().strip()
+                            if current and current not in models:
+                                # 当前模型已不在服务列表（如已退役）→ 自动切换并保存
+                                new_model = next((m for m in models if "flash" in m or "mini" in m), models[0])
+                                self._llm_model_var.set(new_model)
+                                try:
+                                    self.llm_providers = set_provider_model(provider.id, new_model)
+                                except LLMError:
+                                    pass
+                                self._llm_status_var.set(tr("当前模型已不在服务列表中，已切换为：{}").format(new_model))
+                            else:
+                                self._llm_status_var.set(tr("已从服务获取 {} 个模型。").format(len(models)))
+
+                        self._main_queue.put(apply_ok)
+
+                    threading.Thread(target=work, daemon=True).start()
+
+                fetch_models_btn.configure(command=fetch_models)
+                fetch_models_btn.pack(side="left", padx=(8, 0))
                 ttk.Button(llm_row, text=tr("测试连接"), command=run_test, style="Action.TButton").pack(side="left", padx=(10, 0))
                 ttk.Button(llm_row, text=tr("设为当前引擎"), command=use_provider, style="Action.TButton").pack(side="left", padx=(8, 0))
                 import_btn = ttk.Button(llm_row, text=tr("导入密钥…"), style="Primary.TButton")

@@ -372,6 +372,7 @@ def main() -> int:
         check("设置含深色 Combobox 下拉", len(combos) >= 2 and all(str(c.cget("style")) == "Dark.TCombobox" for c in combos))
         known_models = {p.model for p in app.llm_providers}
         check("设置含模型下拉", any(c.get() in known_models for c in combos), str([c.get() for c in combos]))
+        check("设置含拉取模型按钮", any(isinstance(w, _ttk_smoke.Button) and "拉取" in str(w.cget("text")) for d in open_dialogs for w in _walk_smoke(d)))
         for dialog in open_dialogs:
             dialog.update_idletasks()
             check(

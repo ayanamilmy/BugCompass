@@ -14,6 +14,11 @@ _LANGUAGE = "zh"
 
 
 EN: dict[str, str] = {
+    "⟳ 拉取模型": "⟳ Fetch models",
+    "正在从 {} 获取模型列表……": "Fetching model list from {}…",
+    "服务没有返回任何模型。": "The service returned no models.",
+    "已从服务获取 {} 个模型。": "Fetched {} models from the service.",
+    "当前模型已不在服务列表中，已切换为：{}": "The current model is no longer offered by the service; switched to: {}",
     "模型": "Model",
     "模型已保存：{}": "Model saved: {}",
     "（详情已记录到 ~/.bugcompass/logs/llm-test.log）": " (details logged to ~/.bugcompass/logs/llm-test.log)",

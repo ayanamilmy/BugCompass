@@ -80,8 +80,8 @@ PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "id": "deepseek",
         "label": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1",
-        "model": "deepseek-chat",
-        "model_options": ["deepseek-chat", "deepseek-reasoner"],
+        "model": "deepseek-v4-flash",
+        "model_options": ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v3.2", "deepseek-r1-0528"],
         "api_key_env": "DEEPSEEK_API_KEY",
         "max_turns": 12,
         "timeout_seconds": 120,
@@ -90,8 +90,8 @@ PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "id": "qwen",
         "label": "通义千问（DashScope 兼容模式）",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "model": "qwen-plus",
-        "model_options": ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-long"],
+        "model": "qwen3.8-max",
+        "model_options": ["qwen3.8-max", "qwen3.8-flash", "qwen3.5-plus", "qwen3.6-flash", "qwen-plus", "qwen-max", "qwen-turbo"],
         "api_key_env": "DASHSCOPE_API_KEY",
         "max_turns": 12,
         "timeout_seconds": 120,
@@ -100,8 +100,8 @@ PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "id": "kimi",
         "label": "Kimi（月之暗面）",
         "base_url": "https://api.moonshot.cn/v1",
-        "model": "kimi-k2-0905-preview",
-        "model_options": ["kimi-k2-0905-preview", "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
+        "model": "kimi-k2.6",
+        "model_options": ["kimi-k2.6", "kimi-k3", "kimi-k2.7-code", "kimi-k2.5", "kimi-k2-thinking", "moonshot-v1-128k"],
         "api_key_env": "MOONSHOT_API_KEY",
         "max_turns": 12,
         "timeout_seconds": 120,
@@ -110,7 +110,8 @@ PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "id": "glm",
         "label": "智谱 GLM",
         "base_url": "https://open.bigmodel.cn/api/paas/v4",
-        "model": "glm-4.5",
+        "model": "glm-5.2",
+        "model_options": ["glm-5.2", "glm-5.1", "glm-4-flash", "glm-4-air"],
         "api_key_env": "ZHIPU_API_KEY",
         "max_turns": 12,
         "timeout_seconds": 120,
@@ -129,6 +130,7 @@ PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "label": "Ollama（本地）",
         "base_url": "http://localhost:11434/v1",
         "model": "qwen2.5-coder:7b",
+        "model_options": ["qwen2.5-coder:7b", "qwen3:8b", "llama3.1:8b", "deepseek-r1:8b"],
         "api_key_env": "",
         "max_turns": 12,
         "timeout_seconds": 180,
@@ -193,6 +195,38 @@ def ensure_providers() -> list[LLMProviderConfig]:
     """零命令行初始化：配置文件不存在时写入预设模板（绝不覆盖已有文件），然后加载。"""
     write_providers_template()
     return load_providers()
+
+
+def list_models(provider: LLMProviderConfig) -> list[str]:
+    """从服务端实时获取可用模型（GET /models，OpenAI 兼容标准接口）。
+
+    只在用户主动点击「拉取模型」时调用；返回排序去重的模型 id。
+    """
+    url = provider.base_url.rstrip("/") + "/models"
+    headers: dict[str, str] = {"Accept": "application/json", "User-Agent": "BugCompass"}
+    if provider.api_key_env:
+        headers["Authorization"] = f"Bearer {resolve_api_key(provider)}"
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=min(20.0, provider.timeout_seconds)) as response:  # noqa: S310
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise LLMError(f"服务 {provider.label} 拒绝了密钥（HTTP {exc.code}）：请检查密钥是否有效。") from exc
+        raise LLMError(f"获取模型列表失败（HTTP {exc.code}）。") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        reason = getattr(exc, "reason", exc)
+        raise LLMError(f"无法访问 {provider.base_url}：{reason}") from exc
+    except json.JSONDecodeError as exc:
+        raise LLMError(f"服务返回了无法解析的模型列表：{str(exc)[:100]}") from exc
+    raw = payload.get("data") if isinstance(payload, dict) else payload
+    ids: list[str] = []
+    if isinstance(raw, list):
+        for item in raw:
+            model_id = item.get("id") if isinstance(item, dict) else None
+            if isinstance(model_id, str) and model_id.strip():
+                ids.append(model_id.strip())
+    return sorted(set(ids))
 
 
 def set_provider_model(provider_id: str, model: str) -> list[LLMProviderConfig]:
