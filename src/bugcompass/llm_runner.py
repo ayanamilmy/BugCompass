@@ -273,23 +273,41 @@ class LLMInvestigator:
                 error_detail, totals, "超时" if timed_out else "请求失败",
             )
 
-        # 解析 + 落盘（与 CodexRunner 相同的后处理管线）
-        updated = False
+        # 解析 + 落盘（与 CodexRunner 相同的后处理管线）；失败自动纠偏重试一次。
         detail_tail = ""
-        try:
-            data = self._extract_json(final_content)
-            previous_path = Path(view.case_dir) / "investigation.json"
-            previous = read_investigation(previous_path) if previous_path.is_file() else empty_investigation(view.case_id)
-            candidate = validate_investigation(data, require_complete=True)
-            merged = merge_user_decisions(previous, candidate)
-            write_investigation(previous_path, merged, require_complete=True)
-            export_markdown(view.case_dir, merged)
-            updated = True
+
+        def try_finalize(text: str) -> bool:
+            try:
+                data = self._extract_json(text)
+                previous_path = Path(view.case_dir) / "investigation.json"
+                previous = read_investigation(previous_path) if previous_path.is_file() else empty_investigation(view.case_id)
+                candidate = validate_investigation(data, require_complete=True)
+                merged = merge_user_decisions(previous, candidate)
+                write_investigation(previous_path, merged, require_complete=True)
+                export_markdown(view.case_dir, merged)
+            except (ValueError, KeyError, BugCompassError, OSError, json.JSONDecodeError) as exc:
+                nonlocal detail_tail
+                detail_tail = f"\n结构化结果无效：{exc}"
+                return False
             log({"type": "item.completed", "item": {"type": "agent_message", "text": "调查结果已写入 investigation.json"}})
             if progress:
                 progress(f"{self.provider.label} 已完成调查，正在刷新结果……")
-        except (ValueError, KeyError, BugCompassError, OSError, json.JSONDecodeError) as exc:
-            detail_tail = f"\n结构化结果无效：{exc}"
+            return True
+
+        updated = try_finalize(final_content or "")
+        if not updated and not self._cancel.is_set():
+            # 模型偶尔用寒暄/围栏包裹 JSON：带上原回复要求重发一次纯 JSON。
+            try:
+                retry_messages = messages + [
+                    {"role": "assistant", "content": (final_content or "")[:4000]},
+                    {"role": "user", "content": "上一条回复无法解析为 JSON。请重新输出完整的 JSON 对象：不要解释、不要前言、不要 Markdown 围栏。"},
+                ]
+                response = chat_completion(self.provider, retry_messages, api_key=api_key, tools=None)
+                totals["input_tokens"] += response.usage.get("input_tokens", 0)
+                totals["output_tokens"] += response.usage.get("output_tokens", 0)
+                updated = try_finalize(response.content or "")
+            except LLMError as exc:
+                detail_tail += f"\n纠偏重试失败：{exc}"
 
         returncode = 0 if updated else 1
         return self._finish(
@@ -614,7 +632,12 @@ class LLMInvestigator:
         start = stripped.find("{")
         end = stripped.rfind("}")
         if start < 0 or end <= start:
-            raise ValueError("回复里找不到 JSON 对象。")
+            preview = stripped[:120].replace("\n", " ")
+            raise ValueError(
+                f"回复里找不到 JSON 对象（回复开头：{preview or '（空回复）'}）。"
+                "若为空回复，可能是推理类模型把输出放在思维链里——"
+                "请在 ⚙ 设置里换用非推理模型（如 deepseek-v4-flash）后重试。"
+            )
         data = json.loads(stripped[start : end + 1])
         if not isinstance(data, dict):
             raise ValueError("JSON 顶层必须是对象。")

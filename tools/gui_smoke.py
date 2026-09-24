@@ -244,6 +244,27 @@ def main() -> int:
         key_store.delete_key(app.llm_providers[0].id)
         check("密钥删除", key_store.get_key(app.llm_providers[0].id) is None)
 
+        # 1d-pre) 筛选缓存恢复：重开对话框能看到上一轮结果与 AI 评价（曾只填表格、记录列表为空）
+        from bugcompass import issue_scout as _scout_mod
+        from bugcompass.issue_scout import IssueRecord as _SIR, IssueScore as _SIS
+
+        _scout_mod.save_scan(
+            [_SIR(101, "缓存 issue", "u", "正文内容", ["Type/Bug"], "2026-09-01", 0)],
+            {101: _SIS(101, 8, "入门", "复现清晰")},
+            {},
+        )
+        app._open_issue_scout_dialog()
+        app.update()
+        _cache_dialogs = [w for w in app.winfo_children() if isinstance(w, tkinter.Toplevel) and "AI" in w.title()]
+        check("筛选缓存恢复：记录可交互", len(app._scout_records) == 1, str(len(app._scout_records)))
+        app._scout_tree.selection_set("101")
+        app._scout_tree.event_generate("<<TreeviewSelect>>")
+        app.update()
+        _detail = app._scout_detail_text.get("1.0", "end")
+        check("筛选缓存恢复：AI 评价可见", "复现清晰" in _detail, _detail[:60])
+        for _d in _cache_dialogs:
+            _d.destroy()
+
         # 1d) AI 挑选 Issue 对话框（打开不联网；显示离线缓存或空态）
         app._open_issue_scout_dialog()
         app.update()

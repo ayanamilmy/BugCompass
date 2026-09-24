@@ -460,6 +460,9 @@ def _normalize_response(data: dict[str, Any], provider: LLMProviderConfig) -> Ch
     if not isinstance(message, dict):
         raise LLMError(f"{provider.label} 返回里没有 message。")
     content = message.get("content")
+    if not content:
+        # 推理类模型有时把全部输出放在 reasoning_content（content 为空）。
+        content = message.get("reasoning_content")
     tool_calls: list[dict[str, Any]] = []
     raw_calls = message.get("tool_calls")
     if isinstance(raw_calls, list):

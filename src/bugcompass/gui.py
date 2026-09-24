@@ -84,7 +84,7 @@ def codex_status_for_case(
         return CodexStatusPresentation(
             "other",
             tr("● 其他案件调查中"),
-            tr('Codex 正在处理 {}。\n当前案件没有在运行。').format(active_case_id),
+            tr('{} 正在处理 {}。\n当前案件没有在运行。').format(engine_label, active_case_id),
             False,
         )
 
@@ -550,7 +550,7 @@ def run_gui() -> int:
             ttk_module.Button(actions, text=tr("新建另一个调查"), command=self._new_another, style="Action.TButton").pack(side="left")
             self.continue_button = ttk_module.Button(actions, text=tr("继续调查  ▶"), command=self._continue_investigation, style="Primary.TButton", state="disabled")
             self.continue_button.pack(side="left", padx=(10, 0))
-            self.cancel_button = ttk_module.Button(actions, text=tr("停止 Codex  ■"), command=self._cancel_investigation, style="Action.TButton", state="disabled")
+            self.cancel_button = ttk_module.Button(actions, text=tr("停止调查  ■"), command=self._cancel_investigation, style="Action.TButton", state="disabled")
             self.cancel_button.pack(side="left", padx=(8, 0))
             ttk_module.Button(actions, text=tr("备份"), command=self._backup_workspace, style="Action.TButton").pack(side="left", padx=(8, 0))
             ttk_module.Button(actions, text=tr("恢复备份…"), command=self._restore_backup_dialog, style="Action.TButton").pack(side="left", padx=(8, 0))
@@ -636,7 +636,7 @@ def run_gui() -> int:
 
         def show_practice_page(self) -> None:
             if self.busy:
-                self.message_box.showwarning(tr("任务仍在进行"), tr("请先等待当前任务完成，或在正在运行的案件中点击“停止 Codex”。"), parent=self)
+                self.message_box.showwarning(tr("任务仍在进行"), tr("请先等待当前任务完成，或在正在运行的案件中点击“停止调查”。"), parent=self)
                 return
             try:
                 self.practice_cases = self.practice_manager.list_cases()
@@ -834,7 +834,7 @@ def run_gui() -> int:
                     self.current_case = payload
                     self._show_case(payload)
                     self._set_codex_state("working", tr("正在读取案件和 Blender 源码。"))
-                    self.result_hint_var.set(tr("案件已创建，Codex 正在自动调查……"))
+                    self.result_hint_var.set(tr("案件已创建，{} 正在自动调查……").format(self._engine_display_name()))
                     self._refresh_recent_cases()
                 elif kind == "practice_created":
                     self.codex_active = True
@@ -857,7 +857,7 @@ def run_gui() -> int:
                     self.busy = False
                     if self.current_case is not None and self.current_case.case_id == view.case_id:
                         self._add_timeline(
-                            tr('实验 {} 执行完成（返回码 {}），正在请 Codex 更新假设。').format(experiment_id, record['return_code'])
+                            tr('实验 {} 执行完成（返回码 {}），正在请 {} 更新假设。').format(experiment_id, record['return_code'], self._engine_display_name())
                         )
                     self._run_followup("experiment", experiment_id, case_id=view.case_id)
                 elif kind == "success":
@@ -871,7 +871,7 @@ def run_gui() -> int:
                     self.progress_var.set("")
                     if self.current_case is not None and self.current_case.case_id == finished_case_id:
                         self._show_case(payload)
-                        self.result_hint_var.set(tr("Codex 调查完成，结果已自动刷新。"))
+                        self.result_hint_var.set(tr("{} 调查完成，结果已自动刷新。").format(self._engine_display_name()))
                     elif self.current_case is not None:
                         self._show_case(self.controller.load_case(self.current_case.case_id))
                         self.copy_status_var.set(tr('案件 {} 的调查已完成。').format(finished_case_id))
@@ -1061,7 +1061,7 @@ def run_gui() -> int:
             elif self.busy:
                 should_close = self.message_box.askyesno(
                     tr("实验仍在进行"),
-                    tr("本地实验仍在运行，当前不能用“停止 Codex”中止它。确定要关闭窗口吗？"),
+                    tr("本地实验仍在运行，当前不能用“停止调查”中止它。确定要关闭窗口吗？"),
                     parent=self,
                 )
                 if not should_close:
@@ -1091,7 +1091,7 @@ def run_gui() -> int:
             self.result_summary_var.set(
                 tr('案件：{}\nBlender 仓库：{}\n当前 commit：{}\n环境状态：{}\n{}\n案件文件夹：{}').format(view.case_id, view.repo_path, view.short_commit, status_names.get(view.environment_status, view.environment_status), capabilities, view.case_dir)
             )
-            self.result_hint_var.set(tr("案件已经创建，下一步请让 Codex 调查它。") if view.awaiting_investigation else tr("已读取 Codex 调查结果。"))
+            self.result_hint_var.set(tr("案件已经创建，下一步请开始调查。") if view.awaiting_investigation else tr("已读取调查结果。"))
             if view.practice_session_id and self.current_reveal is None:
                 self.result_hint_var.set(tr("历史练习进行中 · 真实修复和答案仍然隐藏。"))
             self._render_codex_state()
@@ -1111,7 +1111,7 @@ def run_gui() -> int:
             summary = data.get("summary", {})
             intro = ttk.LabelFrame(self.cards_host, text=tr("问题整理"), style="Dark.TLabelframe", padding=18)
             intro.pack(fill="x", pady=(0, 10))
-            self._wrap_label(intro, text=summary.get("problem") or tr("案件已创建，Codex 正在整理问题。"), style="Body.TLabel", justify="left", font=self._font("SF Pro Display", 14, "bold")).pack(anchor="w")
+            self._wrap_label(intro, text=summary.get("problem") or tr("案件已创建，{} 正在整理问题。").format(self._engine_display_name()), style="Body.TLabel", justify="left", font=self._font("SF Pro Display", 14, "bold")).pack(anchor="w")
             self._render_metrics_card(view)
             self._render_causal_graph(data.get("causal_graph", {"nodes": [], "edges": []}))
             self._render_semantic_diff(data.get("semantic_diff", {}))
@@ -1253,7 +1253,7 @@ def run_gui() -> int:
             ttk.Label(header, text=names.get(status, status), style="Status.TLabel").pack(side="left")
             ttk.Button(header, text=tr("分析当前代码改动"), command=lambda: self._run_followup("semantic_diff", "working-tree"), style="Action.TButton").pack(side="right")
             if status == "not_available":
-                self._wrap_label(panel, text=tr("当前还没有可解释的相关改动。代码发生变化后点击右侧按钮，Codex 会只读分析 git diff。"), style="Muted.TLabel", justify="left").pack(anchor="w", pady=(8, 0))
+                self._wrap_label(panel, text=tr("当前还没有可解释的相关改动。代码发生变化后点击右侧按钮，调查引擎会只读分析 git diff。"), style="Muted.TLabel", justify="left").pack(anchor="w", pady=(8, 0))
                 return
             self._wrap_label(panel, text=semantic.get("summary", ""), style="Body.TLabel", justify="left", font=self._font("SF Pro Display", 12, "bold")).pack(anchor="w", pady=(10, 8))
             rules = ttk.Frame(panel, style="Card.TFrame")
@@ -2130,6 +2130,8 @@ def run_gui() -> int:
                 scores = scan_scores_from_cache(cache)
                 fetched_at = str(cache.get("fetched_at", ""))[:16].replace("T", " ")
                 if records:
+                    self._scout_records = records
+                    self._scout_scores = scores
                     self._scout_populate(records, scores)
                     self._scout_status_var.set(tr('显示上次筛选结果（{}，离线缓存）。可重新筛选获取最新。').format(fetched_at))
             dialog.grab_set()
@@ -2718,7 +2720,7 @@ def run_gui() -> int:
 
         def _new_another(self) -> None:
             if self.busy:
-                self.message_box.showwarning(tr("调查仍在进行"), tr("请先等待调查完成，或在正在运行的案件中点击“停止 Codex”。"), parent=self)
+                self.message_box.showwarning(tr("调查仍在进行"), tr("请先等待调查完成，或在正在运行的案件中点击“停止调查”。"), parent=self)
                 return
             self.bug_text.delete("1.0", "end")
             self._set_char_count()

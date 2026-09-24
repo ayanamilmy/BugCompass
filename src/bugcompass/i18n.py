@@ -14,6 +14,18 @@ _LANGUAGE = "zh"
 
 
 EN: dict[str, str] = {
+    "{} 正在处理 {}。\n当前案件没有在运行。": "{} is working on {}.\nThe current case is not running.",
+    "停止调查  ■": "Stop investigation  ■",
+    "请先等待当前任务完成，或在正在运行的案件中点击“停止调查”。": "Wait for the current task to finish, or click “Stop investigation” in the running case.",
+    "请先等待调查完成，或在正在运行的案件中点击“停止调查”。": "Wait for the investigation to finish, or click “Stop investigation” in the running case.",
+    "案件已创建，{} 正在自动调查……": "Case created; {} is investigating automatically…",
+    "实验 {} 执行完成（返回码 {}），正在请 {} 更新假设。": "Experiment {} finished (return code {}); asking {} to update the hypothesis.",
+    "{} 调查完成，结果已自动刷新。": "{} finished the investigation; results refreshed automatically.",
+    "本地实验仍在运行，当前不能用“停止调查”中止它。确定要关闭窗口吗？": "A local experiment is still running and “Stop investigation” cannot abort it. Close the window anyway?",
+    "案件已经创建，下一步请开始调查。": "Case created; next, start the investigation.",
+    "已读取调查结果。": "Investigation results loaded.",
+    "案件已创建，{} 正在整理问题。": "Case created; {} is organizing the problem.",
+    "当前还没有可解释的相关改动。代码发生变化后点击右侧按钮，调查引擎会只读分析 git diff。": "No explainable related changes yet. Once the code changes, click the button on the right and the investigation engine will analyze the git diff read-only.",
     "⟳ 拉取模型": "⟳ Fetch models",
     "正在从 {} 获取模型列表……": "Fetching model list from {}…",
     "服务没有返回任何模型。": "The service returned no models.",

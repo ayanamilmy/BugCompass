@@ -722,5 +722,84 @@ class SSLContextTests(IsolatedHomeTestCase):
         self.assertIn("certifi", str(ctx.exception))
 
 
+class ExtractJSONTests(unittest.TestCase):
+    def test_error_message_has_preview_and_guidance(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            llm_runner.LLMInvestigator._extract_json("好的，我明白了。")
+        message = str(ctx.exception)
+        self.assertIn("好的，我明白了", message)
+        self.assertIn("推理", message)
+
+    def test_empty_reply_guidance(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            llm_runner.LLMInvestigator._extract_json("   ")
+        self.assertIn("空回复", str(ctx.exception))
+
+    def test_json_in_prose_with_fences(self) -> None:
+        data = llm_runner.LLMInvestigator._extract_json('如下：\n```json\n{"a": 1}\n```\n完毕')
+        self.assertEqual(data, {"a": 1})
+
+
+class RetryFinalizeTests(IsolatedHomeTestCase):
+    """模型回复不是 JSON 时：自动纠偏重试一次，第二次成功则调查成立。"""
+
+    def test_retry_recovers_from_prose_reply(self) -> None:
+        base = Path(self._home.name)
+        repo = base / "repo"
+        (repo / "source").mkdir(parents=True)
+        case_dir = base / "ws" / "cases" / "c"
+        case_dir.mkdir(parents=True)
+        (case_dir / "issue-original.md").write_text("问题", encoding="utf-8")
+        (case_dir / "case.json").write_text("{}", encoding="utf-8")
+        view = SimpleNamespace(case_id="c", case_dir=case_dir, workspace_path=base / "ws", repo_path=repo, investigation={})
+        investigator = llm_runner.LLMInvestigator(base, make_provider())
+        garbage = llm.ChatResponse(content="收到，我这就开始调查这个问题。", tool_calls=[], usage={}, finish_reason="stop")
+        good = llm.ChatResponse(content=json.dumps(valid_investigation("c"), ensure_ascii=False), tool_calls=[], usage={}, finish_reason="stop")
+        with mock.patch.object(llm_runner, "chat_completion", side_effect=[garbage, good]), \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-x"}):
+            result = investigator.run(view, action="initial")
+        self.assertTrue(result.investigation_updated)
+        self.assertTrue((case_dir / "investigation.json").is_file())
+
+    def test_retry_also_failing_reports_clearly(self) -> None:
+        base = Path(self._home.name)
+        repo = base / "repo"
+        (repo / "source").mkdir(parents=True)
+        case_dir = base / "ws" / "cases" / "c"
+        case_dir.mkdir(parents=True)
+        (case_dir / "issue-original.md").write_text("问题", encoding="utf-8")
+        (case_dir / "case.json").write_text("{}", encoding="utf-8")
+        view = SimpleNamespace(case_id="c", case_dir=case_dir, workspace_path=base / "ws", repo_path=repo, investigation={})
+        investigator = llm_runner.LLMInvestigator(base, make_provider())
+        garbage = llm.ChatResponse(content="仍然不是 JSON", tool_calls=[], usage={}, finish_reason="stop")
+        with mock.patch.object(llm_runner, "chat_completion", return_value=garbage), \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-x"}):
+            result = investigator.run(view, action="initial")
+        self.assertFalse(result.investigation_updated)
+        self.assertIn("结构化结果无效", result.error_detail or "")
+
+
+class ReasoningContentFallbackTests(unittest.TestCase):
+    def test_empty_content_falls_back_to_reasoning(self) -> None:
+        provider = make_provider()
+        data = {
+            "choices": [
+                {"message": {"content": None, "reasoning_content": '{"answer": 42}'}}
+            ]
+        }
+        response = llm._normalize_response(data, provider)
+        self.assertEqual(response.content, '{"answer": 42}')
+
+    def test_normal_content_preferred(self) -> None:
+        provider = make_provider()
+        data = {
+            "choices": [
+                {"message": {"content": "正文", "reasoning_content": "思维链"}}
+            ]
+        }
+        response = llm._normalize_response(data, provider)
+        self.assertEqual(response.content, "正文")
+
+
 if __name__ == "__main__":
     unittest.main()
