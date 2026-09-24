@@ -19,6 +19,39 @@ from typing import Any, Callable
 _NATIVE_SCROLLERS = ("Text", "Listbox", "Treeview", "TCombobox", "Spinbox", "Entry", "TEntry")
 
 
+class _CanvasWheelAdapter:
+    """自管画布（如思维导图）的滚动代理。
+
+    macOS 上 Tk 把滚轮事件投递给焦点控件而非指针下的控件，画布自身的
+    bind 经常收不到事件；全局路由器（bind_all）反而一定能收到。注册本
+    适配器后，路由器把滚轮转发给画布控制器（Linux/Windows 上画布自身
+    绑定先触发并 "break"，不会重复滚动）。
+    """
+
+    def __init__(self, canvas: Any, controller: Any) -> None:
+        self.canvas = canvas
+        self.controller = controller  # 需要 _pan(dx, dy) 与 zoom_at(x, y, factor)
+
+    def scroll_pixels(self, pixels: int) -> None:
+        if pixels:
+            self.controller._pan(0.0, pixels / 2.0)
+
+    def scroll_units(self, units: int) -> None:
+        self.scroll_pixels(units * 20)
+
+    def scroll_horizontal(self, pixels: int) -> None:
+        if pixels:
+            self.controller._pan(pixels / 2.0, 0.0)
+
+    def handle_zoom_wheel(self, delta: int, event: Any = None) -> None:
+        try:
+            x = max(0, self.canvas.winfo_pointerx() - self.canvas.winfo_rootx())
+            y = max(0, self.canvas.winfo_pointery() - self.canvas.winfo_rooty())
+        except Exception:  # pragma: no cover - 画布已销毁
+            x = y = 0
+        self.controller.zoom_at(x, y, 1.1 if delta > 0 else 1 / 1.1)
+
+
 class MouseWheelRouter:
     """把滚轮事件路由到指针下方的可滚动容器。
 
@@ -29,12 +62,17 @@ class MouseWheelRouter:
     def __init__(self, root: Any) -> None:
         self.root = root
         self._targets: dict[str, "ScrollableFrame"] = {}
+        self._canvas_adapters: dict[str, _CanvasWheelAdapter] = {}
         root.bind_all("<MouseWheel>", self._on_mouse_wheel, add="+")
         root.bind_all("<Button-4>", self._on_button_4, add="+")
         root.bind_all("<Button-5>", self._on_button_5, add="+")
 
     def register(self, frame: "ScrollableFrame") -> None:
         self._targets[str(frame.canvas)] = frame
+
+    def register_canvas(self, canvas: Any, controller: Any) -> None:
+        """注册自管滚轮的画布（macOS 焦点投递问题由路由器转发兜底）。"""
+        self._canvas_adapters[str(canvas)] = _CanvasWheelAdapter(canvas, controller)
 
     def unregister(self, frame: "ScrollableFrame") -> None:
         self._targets.pop(str(frame.canvas), None)
@@ -48,7 +86,10 @@ class MouseWheelRouter:
         if target is None:
             return None
         if bool(event.state & 0x0004):  # Ctrl：缩放
-            target.handle_zoom_wheel(delta)
+            target.handle_zoom_wheel(delta, event)
+            return "break"
+        if bool(event.state & 0x0001) and hasattr(target, "scroll_horizontal"):
+            target.scroll_horizontal(-delta)  # Shift：横向平移（画布）
             return "break"
         target.scroll_pixels(-delta)
         return "break"
@@ -78,7 +119,7 @@ class MouseWheelRouter:
             if widget_class in _NATIVE_SCROLLERS:
                 return None  # 让原生滚动生效（滚到尽头时 Tk 会自然冒泡）
             if widget_class == "Canvas" and getattr(widget, "_bugcompass_wheel_native", False):
-                return None  # 自己处理滚轮的画布（如思维导图画布）
+                return self._canvas_adapters.get(str(widget))  # 自管画布：路由器转发（macOS 兜底）
             key = str(widget)
             if key in self._targets:
                 return self._targets[key]
@@ -169,7 +210,7 @@ class ScrollableFrame:
     def scroll_to_top(self) -> None:
         self.canvas.yview_moveto(0.0)
 
-    def handle_zoom_wheel(self, delta: int) -> None:
+    def handle_zoom_wheel(self, delta: int, event: Any = None) -> None:
         if self._zoom_callback is None:
             return
         step = 10 if delta > 0 else -10

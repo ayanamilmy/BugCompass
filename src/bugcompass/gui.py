@@ -1206,6 +1206,7 @@ def run_gui() -> int:
             self.mindmap.canvas.pack(fill="both", expand=True)
             self.causal_canvas = self.mindmap.canvas
             self.mindmap.set_graph(self.causal_graph)
+            self.wheel_router.register_canvas(self.mindmap.canvas, self.mindmap)
             legend = ttk.Frame(panel, style="Card.TFrame")
             legend.pack(fill="x", pady=(7, 0))
             ttk.Label(legend, text=tr("实线＝事实   虚线＝推测/未知   双击节点就地改名   空白处框选多节点   Delete 删除选中   Ctrl+Z/Ctrl+Y 撤销重做   按住 Alt 拖动临时关闭网格吸附"), style="Muted.TLabel").pack(side="left")

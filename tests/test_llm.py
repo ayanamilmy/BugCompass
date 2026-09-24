@@ -739,6 +739,29 @@ class ExtractJSONTests(unittest.TestCase):
         data = llm_runner.LLMInvestigator._extract_json('如下：\n```json\n{"a": 1}\n```\n完毕')
         self.assertEqual(data, {"a": 1})
 
+    def test_dsml_tool_markup_stripped(self) -> None:
+        # DeepSeek 偶尔把工具调用以文本形式输出（DSML 标记），其后才是 JSON。
+        text = (
+            '<|DSML|calls><|DSML|invoke name="read_file">'
+            '<|DSML|parameter name="path" string="true">source/blender/draw/intern.cc'
+            ' {"summary": {"problem": "崩溃"}}'
+        )
+        data = llm_runner.LLMInvestigator._extract_json(text)
+        self.assertEqual(data, {"summary": {"problem": "崩溃"}})
+
+    def test_dsml_only_reply_gives_specific_guidance(self) -> None:
+        text = '<|DSML|calls><|DSML|invoke name="read_file"><|DSML|parameter name="path" string="true">a.py'
+        with self.assertRaises(ValueError) as ctx:
+            llm_runner.LLMInvestigator._extract_json(text)
+        message = str(ctx.exception)
+        self.assertIn("工具调用", message)
+        self.assertIn("DSML", message)
+
+    def test_fullwidth_variant_also_stripped(self) -> None:
+        text = '<｜DSML｜calls>细枝末节 {"ok": 1}'
+        data = llm_runner.LLMInvestigator._extract_json(text)
+        self.assertEqual(data, {"ok": 1})
+
 
 class RetryFinalizeTests(IsolatedHomeTestCase):
     """模型回复不是 JSON 时：自动纠偏重试一次，第二次成功则调查成立。"""
@@ -760,6 +783,34 @@ class RetryFinalizeTests(IsolatedHomeTestCase):
             result = investigator.run(view, action="initial")
         self.assertTrue(result.investigation_updated)
         self.assertTrue((case_dir / "investigation.json").is_file())
+
+    def test_retry_prompt_forbids_tool_markup(self) -> None:
+        base = Path(self._home.name)
+        repo = base / "repo"
+        (repo / "source").mkdir(parents=True)
+        case_dir = base / "ws" / "cases" / "c"
+        case_dir.mkdir(parents=True)
+        (case_dir / "issue-original.md").write_text("问题", encoding="utf-8")
+        (case_dir / "case.json").write_text("{}", encoding="utf-8")
+        view = SimpleNamespace(case_id="c", case_dir=case_dir, workspace_path=base / "ws", repo_path=repo, investigation={})
+        investigator = llm_runner.LLMInvestigator(base, make_provider())
+        dsml = llm.ChatResponse(
+            content='<|DSML|calls><|DSML|invoke name="read_file"><|DSML|parameter name="path" string="true">a.py',
+            tool_calls=[], usage={}, finish_reason="stop",
+        )
+        good = llm.ChatResponse(content=json.dumps(valid_investigation("c"), ensure_ascii=False), tool_calls=[], usage={}, finish_reason="stop")
+        captured: list[list[dict]] = []
+
+        def spy(provider, messages, **kwargs):
+            captured.append(messages)
+            return dsml if len(captured) == 1 else good
+
+        with mock.patch.object(llm_runner, "chat_completion", side_effect=spy), \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-x"}):
+            result = investigator.run(view, action="initial")
+        self.assertTrue(result.investigation_updated)
+        self.assertGreaterEqual(len(captured), 2)
+        self.assertIn("DSML", captured[-1][-1]["content"])  # 纠偏提示明确禁止工具标记
 
     def test_retry_also_failing_reports_clearly(self) -> None:
         base = Path(self._home.name)

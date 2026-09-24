@@ -300,7 +300,7 @@ class LLMInvestigator:
             try:
                 retry_messages = messages + [
                     {"role": "assistant", "content": (final_content or "")[:4000]},
-                    {"role": "user", "content": "上一条回复无法解析为 JSON。请重新输出完整的 JSON 对象：不要解释、不要前言、不要 Markdown 围栏。"},
+                    {"role": "user", "content": "上一条回复无法解析为 JSON。请重新输出完整的 JSON 对象：不要解释、不要前言、不要 Markdown 围栏，也不要任何工具调用标记或工具调用文本（如 <|DSML|>）。"},
                 ]
                 response = chat_completion(self.provider, retry_messages, api_key=api_key, tools=None)
                 totals["input_tokens"] += response.usage.get("input_tokens", 0)
@@ -619,9 +619,17 @@ class LLMInvestigator:
         return LLMRunResult(returncode, cancelled, "", error_detail, returncode == 0, timed_out)
 
     # ------------------------------------------------------------------ JSON 解析
-    @staticmethod
-    def _extract_json(text: str) -> dict[str, Any]:
-        stripped = text.strip()
+    _TOOL_MARKUP_TAG = re.compile(r"<[|｜*]?\s*(?:DSML|tool_call|think)[^>]*>", re.IGNORECASE)
+
+    @classmethod
+    def _strip_tool_markup(cls, text: str) -> str:
+        """剥掉模型以文本形式输出的工具调用标记（DeepSeek 的 <|DSML|…> 等）。"""
+        return cls._TOOL_MARKUP_TAG.sub(" ", text)
+
+    @classmethod
+    def _extract_json(cls, text: str) -> dict[str, Any]:
+        markup_found = bool(cls._TOOL_MARKUP_TAG.search(text))
+        stripped = cls._strip_tool_markup(text).strip()
         if stripped.startswith("```"):
             lines = stripped.splitlines()
             if lines and lines[0].startswith("```"):
@@ -633,10 +641,20 @@ class LLMInvestigator:
         end = stripped.rfind("}")
         if start < 0 or end <= start:
             preview = stripped[:120].replace("\n", " ")
+            if markup_found:
+                guidance = (
+                    "模型在用文本形式反复发起工具调用（DSML 标记）而没有输出约定的 JSON。"
+                    "请在 ⚙ 设置 → 模型服务里换一个非推理模型后重试。"
+                )
+            elif not stripped:
+                guidance = (
+                    "回复为空，可能是推理类模型把输出放在思维链里——"
+                    "请在 ⚙ 设置里换用非推理模型（如 deepseek-v4-flash）后重试。"
+                )
+            else:
+                guidance = "请在 ⚙ 设置里换用非推理模型后重试。"
             raise ValueError(
-                f"回复里找不到 JSON 对象（回复开头：{preview or '（空回复）'}）。"
-                "若为空回复，可能是推理类模型把输出放在思维链里——"
-                "请在 ⚙ 设置里换用非推理模型（如 deepseek-v4-flash）后重试。"
+                f"回复里找不到 JSON 对象（回复开头：{preview or '（空回复）'}）。{guidance}"
             )
         data = json.loads(stripped[start : end + 1])
         if not isinstance(data, dict):
