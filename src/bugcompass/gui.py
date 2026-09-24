@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import queue
 import threading
 from dataclasses import dataclass
@@ -255,12 +256,27 @@ def run_gui() -> int:
             style.configure("Dark.TEntry", fieldbackground=self.SURFACE_ALT, foreground=self.TEXT, insertcolor=self.TEXT, padding=10, borderwidth=1)
             style.configure("Dark.TLabelframe", background=self.SURFACE, bordercolor=self.BORDER, relief="solid", borderwidth=1)
             style.configure("Dark.TLabelframe.Label", background=self.SURFACE, foreground=self.MUTED, font=self._font("SF Pro Text", 9, "bold"))
-            style.configure("Dark.TCombobox", fieldbackground=self.SURFACE_ALT, background=self.SURFACE_ALT, foreground=self.TEXT, arrowcolor=self.TEXT, bordercolor=self.BORDER, insertcolor=self.TEXT)
-            # 下拉弹出列表是独立 Listbox，用 option_add 全局着色（macOS 上同样生效）。
-            self.option_add("*TCombobox*Listbox*Background", self.SURFACE_ALT)
-            self.option_add("*TCombobox*Listbox*Foreground", self.TEXT)
-            self.option_add("*TCombobox*Listbox*selectBackground", "#654127")
-            self.option_add("*TCombobox*Listbox*selectForeground", self.TEXT)
+            # macOS(Aqua) 会无视自定义深色 fieldbackground、却应用前景色——
+            # 深底白字在 Mac 上会变成“浅底白字”不可读。因此分平台：
+            # macOS 顺应系统浅色底 + 黑字；Windows/Linux 背景设置生效，用深底白字。
+            if sys.platform == "darwin":
+                style.configure(
+                    "Dark.TCombobox",
+                    fieldbackground="#FFFFFF", background="#E9E9EC",
+                    foreground="#111111", arrowcolor="#111111",
+                    bordercolor="#C9C9CE", insertcolor="#111111",
+                )
+                self.option_add("*TCombobox*Listbox*Background", "#FFFFFF")
+                self.option_add("*TCombobox*Listbox*Foreground", "#111111")
+                self.option_add("*TCombobox*Listbox*selectBackground", "#C7E0FF")
+                self.option_add("*TCombobox*Listbox*selectForeground", "#111111")
+            else:
+                style.configure("Dark.TCombobox", fieldbackground=self.SURFACE_ALT, background=self.SURFACE_ALT, foreground=self.TEXT, arrowcolor=self.TEXT, bordercolor=self.BORDER, insertcolor=self.TEXT)
+                # 下拉弹出列表是独立 Listbox，用 option_add 全局着色。
+                self.option_add("*TCombobox*Listbox*Background", self.SURFACE_ALT)
+                self.option_add("*TCombobox*Listbox*Foreground", self.TEXT)
+                self.option_add("*TCombobox*Listbox*selectBackground", "#654127")
+                self.option_add("*TCombobox*Listbox*selectForeground", self.TEXT)
             style.configure("Scout.Treeview", background=self.SURFACE_ALT, fieldbackground=self.SURFACE_ALT, foreground=self.TEXT, borderwidth=0, rowheight=30)
             style.configure("Scout.Treeview.Heading", background=self.SURFACE, foreground=self.MUTED, borderwidth=0, relief="flat", font=self._font("SF Pro Text", 9, "bold"))
             style.map("Scout.Treeview", background=[("selected", "#654127")], foreground=[("selected", self.TEXT)])
