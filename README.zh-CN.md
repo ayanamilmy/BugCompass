@@ -1,4 +1,6 @@
-# BugCompass 0.4
+# BugCompass 0.5
+
+[English README](README.md)
 
 BugCompass 是一个中文优先的本地工具。普通 Blender 用户可以在图形界面中整理可复现 Bug 报告；需要深入排查时，也可以把问题交给源码调查工作台。CLI 保留给高级使用和排错。
 

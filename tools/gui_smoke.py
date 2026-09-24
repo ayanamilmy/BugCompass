@@ -382,6 +382,43 @@ def main() -> int:
             app.destroy()
         except Exception:
             pass
+
+    # 3) 英文模式：写入 language=en 后重新启动，检查整窗文案
+    try:
+        from bugcompass.settings import load_settings, save_settings
+        from bugcompass import i18n
+
+        settings = load_settings()
+        settings["language"] = "en"
+        save_settings(settings)
+        apps.clear()
+        with mock.patch.object(CodexRunner, "find_executable", staticmethod(lambda: "/bin/true")), \
+             mock.patch("tkinter.Tk.mainloop", capture_mainloop):
+            rc = gui.run_gui()
+        check("英文模式启动", rc == 0 and len(apps) == 1)
+        if apps:
+            import tkinter as tkmod
+            from tkinter import ttk as ttkmod
+
+            en_app = apps[0]
+            en_app.update()
+            def walk(widget):
+                for child in widget.winfo_children():
+                    yield child
+                    yield from walk(child)
+
+            texts = [en_app.title()]
+            for w in walk(en_app):
+                if isinstance(w, (ttkmod.Button, tkmod.Label)):
+                    texts.append(str(w.cget("text")))
+            all_text = " ".join(texts)
+            check("英文模式标题", "Blender Bug Assistant" in all_text)
+            check("英文模式含 Settings", "Settings" in all_text)
+            check("英文模式含 Issue Scout", "Issue Scout" in all_text)
+            check("英文模式无中文残留(顶栏)", not any("\u4e00" <= ch <= "\u9fff" for ch in all_text), all_text[:160])
+            en_app.destroy()
+        i18n.set_language("zh")
+    finally:
         shutil.rmtree(home, ignore_errors=True)
         shutil.rmtree(work, ignore_errors=True)
     return report()

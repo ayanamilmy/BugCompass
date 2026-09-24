@@ -5,6 +5,7 @@ from __future__ import annotations
 import webbrowser
 from typing import Any, Callable
 
+from .i18n import tr
 from .report_mode import ReportStore
 from .repro_report import REPORT_GUIDE, format_official_body, review_draft
 from .workspace import BugCompassError
@@ -21,7 +22,7 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
 
     draft = store.load(report_id)
     dialog = tk.Toplevel(parent)
-    dialog.title("报告 Bug · Blender")
+    dialog.title(tr("报告 Bug · Blender"))
     dialog.geometry("860x760")
     dialog.minsize(720, 620)
     dialog.configure(background=parent.BACKGROUND)
@@ -30,10 +31,10 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
 
     shell = ttk.Frame(dialog, style="App.TFrame", padding=16)
     shell.pack(fill="both", expand=True)
-    ttk.Label(shell, text="报告 Blender Bug", style="Title.TLabel").pack(anchor="w")
+    ttk.Label(shell, text=tr("报告 Blender Bug"), style="Title.TLabel").pack(anchor="w")
     ttk.Label(
         shell,
-        text="不需要源码、终端或 AI。请填写亲自看到的情况；草稿仅保存在本机。适用于 Blender 程序本身。",
+        text=tr("不需要源码、终端或 AI。请填写亲自看到的情况；草稿仅保存在本机。适用于 Blender 程序本身。"),
         style="PageSubtitle.TLabel", wraplength=780,
     ).pack(anchor="w", pady=(3, 12))
 
@@ -42,9 +43,9 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
     problem = ttk.Frame(tabs, style="Surface.TFrame", padding=14)
     materials = ttk.Frame(tabs, style="Surface.TFrame", padding=14)
     preview = ttk.Frame(tabs, style="Surface.TFrame", padding=14)
-    tabs.add(problem, text="1  描述问题")
-    tabs.add(materials, text="2  复现材料")
-    tabs.add(preview, text="3  核对与提交")
+    tabs.add(problem, text=tr("1  描述问题"))
+    tabs.add(materials, text=tr("2  复现材料"))
+    tabs.add(preview, text=tr("3  核对与提交"))
 
     def label(container: Any, value: str) -> None:
         ttk.Label(container, text=value, style="Heading.TLabel", font=parent._font("SF Pro Text", 10, "bold")).pack(anchor="w", pady=(8, 3))
@@ -52,15 +53,15 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
     fields: dict[str, Any] = {}
     editors: dict[str, Any] = {}
 
-    label(problem, "简短标题：什么操作出现了什么问题？")
+    label(problem, tr("简短标题：什么操作出现了什么问题？"))
     title_var = tk.StringVar(value=draft["title"])
     ttk.Entry(problem, textvariable=title_var, style="Dark.TEntry").pack(fill="x")
     fields["title"] = title_var
 
     for name, prompt, height in (
-        ("steps", "从默认场景或所附 .blend 开始，按顺序写出每一步", 8),
-        ("expected", "原本应当发生什么？", 3),
-        ("actual", "实际发生了什么？", 3),
+        ("steps", tr("从默认场景或所附 .blend 开始，按顺序写出每一步"), 8),
+        ("expected", tr("原本应当发生什么？"), 3),
+        ("actual", tr("实际发生了什么？"), 3),
     ):
         label(problem, prompt)
         editor = tk.Text(problem, height=height, wrap="word", background=parent.SURFACE_ALT, foreground=parent.TEXT,
@@ -70,25 +71,25 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
         editors[name] = editor
 
     for name, prompt in (
-        ("broken_version", "出错的 Blender 完整版本（可从启动画面查看）"),
-        ("working_version", "最后正常的版本（不知道可留空）"),
-        ("latest_tested_version", "最近复测的版本（如已复测）"),
-        ("system_info", "系统、显卡和驱动摘要；或在下方加入 system-info.txt"),
+        ("broken_version", tr("出错的 Blender 完整版本（可从启动画面查看）")),
+        ("working_version", tr("最后正常的版本（不知道可留空）")),
+        ("latest_tested_version", tr("最近复测的版本（如已复测）")),
+        ("system_info", tr("系统、显卡和驱动摘要；或在下方加入 system-info.txt")),
     ):
         label(materials, prompt)
         variable = tk.StringVar(value=draft[name])
         ttk.Entry(materials, textvariable=variable, style="Dark.TEntry").pack(fill="x")
         fields[name] = variable
 
-    ttk.Label(materials, text="在 Blender 中可用“帮助 → 保存系统信息”取得 system-info.txt。", style="Muted.TLabel").pack(anchor="w", pady=(5, 8))
+    ttk.Label(materials, text=tr("在 Blender 中可用“帮助 → 保存系统信息”取得 system-info.txt。"), style="Muted.TLabel").pack(anchor="w", pady=(5, 8))
     flags: dict[str, Any] = {}
     for name, prompt in (
-        ("reproduced", "我已按所写步骤再次复现"),
-        ("factory_startup", "无需 .blend，从默认场景就能复现"),
-        ("tested_latest", "我已用最新稳定版或开发版复测"),
-        ("duplicate_checked", "我已搜索开放及已关闭的报告"),
-        ("simplified_file", "所附 .blend 已删去无关内容"),
-        ("crash", "这是崩溃问题"),
+        ("reproduced", tr("我已按所写步骤再次复现")),
+        ("factory_startup", tr("无需 .blend，从默认场景就能复现")),
+        ("tested_latest", tr("我已用最新稳定版或开发版复测")),
+        ("duplicate_checked", tr("我已搜索开放及已关闭的报告")),
+        ("simplified_file", tr("所附 .blend 已删去无关内容")),
+        ("crash", tr("这是崩溃问题")),
     ):
         variable = tk.BooleanVar(value=draft[name])
         tk.Checkbutton(materials, text=prompt, variable=variable, background=parent.SURFACE, foreground=parent.TEXT,
@@ -110,7 +111,7 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
     flags["factory_startup"].trace_add("write", lambda *_args: flags["reproduced"].set(False))
 
     paths = list(draft["attachments"])
-    label(materials, "准备公开的附件（简化 .blend、截图、system-info.txt、崩溃日志）")
+    label(materials, tr("准备公开的附件（简化 .blend、截图、system-info.txt、崩溃日志）"))
     attachment_list = tk.Listbox(materials, height=4, background=parent.SURFACE_ALT, foreground=parent.TEXT,
                                  selectbackground=parent.BORDER, borderwidth=0)
     attachment_list.pack(fill="x")
@@ -122,7 +123,7 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
 
     def add_attachments() -> None:
         added_blend = False
-        for path in filedialog.askopenfilenames(title="选择准备公开的附件", parent=dialog):
+        for path in filedialog.askopenfilenames(title=tr("选择准备公开的附件"), parent=dialog):
             if path not in paths:
                 paths.append(path)
                 added_blend = added_blend or path.casefold().endswith(".blend")
@@ -142,10 +143,10 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
     refresh_attachments()
     attachment_actions = ttk.Frame(materials, style="Surface.TFrame")
     attachment_actions.pack(anchor="w", pady=(5, 0))
-    ttk.Button(attachment_actions, text="添加附件…", command=add_attachments, style="Action.TButton").pack(side="left")
-    ttk.Button(attachment_actions, text="移除所选", command=remove_attachment, style="Ghost.TButton").pack(side="left", padx=(8, 0))
+    ttk.Button(attachment_actions, text=tr("添加附件…"), command=add_attachments, style="Action.TButton").pack(side="left")
+    ttk.Button(attachment_actions, text=tr("移除所选"), command=remove_attachment, style="Ghost.TButton").pack(side="left", padx=(8, 0))
 
-    ttk.Label(preview, text="提交时标题与正文分别填写。附件需在官方页面单独上传。", style="Muted.TLabel").pack(anchor="w", pady=(0, 7))
+    ttk.Label(preview, text=tr("提交时标题与正文分别填写。附件需在官方页面单独上传。"), style="Muted.TLabel").pack(anchor="w", pady=(0, 7))
     preview_title = tk.StringVar()
     ttk.Label(preview, textvariable=preview_title, style="Heading.TLabel", wraplength=760).pack(anchor="w", pady=(0, 7))
     body_box = ttk.Frame(preview, style="Surface.TFrame")
@@ -156,7 +157,7 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
     body_scroll = ttk.Scrollbar(body_box, orient="vertical", command=preview_body.yview)
     body_scroll.pack(side="right", fill="y")
     preview_body.configure(yscrollcommand=body_scroll.set)
-    ttk.Label(preview, text="提交前核对", style="Heading.TLabel").pack(anchor="w", pady=(9, 4))
+    ttk.Label(preview, text=tr("提交前核对"), style="Heading.TLabel").pack(anchor="w", pady=(9, 4))
     review_box = ttk.Frame(preview, style="Surface.TFrame")
     review_box.pack(fill="x")
     review_text = tk.Text(review_box, height=7, wrap="word", background=parent.SURFACE_ALT, foreground=parent.MUTED,
@@ -183,11 +184,11 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
     def refresh_preview(_event: Any = None) -> None:
         data = current_draft()
         review = review_draft(data)
-        preview_title.set("标题：" + (data["title"].strip() or "（待填写）"))
+        preview_title.set(tr("标题：") + (data["title"].strip() or tr("（待填写）")))
         readonly(preview_body, format_official_body(data))
-        lines = (["尚需补充："] + [f"• {item}" for item in review.missing_required]) if review.missing_required else ["必填材料已填写；请仍以实际复现为准。"]
-        lines += ["", "建议核对："] + [f"• {item}" for item in review.suggestions]
-        lines += ["", "附件："] + [f"• {path}" for path in paths]
+        lines = ([tr("尚需补充：")] + [f"• {item}" for item in review.missing_required]) if review.missing_required else [tr("必填材料已填写；请仍以实际复现为准。")]
+        lines += ["", tr("建议核对：")] + [f"• {item}" for item in review.suggestions]
+        lines += ["", tr("附件：")] + [f"• {path}" for path in paths]
         readonly(review_text, "\n".join(lines))
 
     tabs.bind("<<NotebookTabChanged>>", lambda _event: refresh_preview() if tabs.select() == str(preview) else None)
@@ -196,7 +197,7 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
         try:
             store.save(report_id, current_draft())
         except (BugCompassError, OSError) as exc:
-            messagebox.showerror("保存失败", str(exc), parent=dialog)
+            messagebox.showerror(tr("保存失败"), str(exc), parent=dialog)
             return False
         on_saved()
         refresh_preview()
@@ -208,43 +209,43 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
         _, body, review = store.preview(report_id)
         if not review.ready_for_review:
             tabs.select(preview)
-            messagebox.showwarning("报告尚未齐全", "请先补充预览中列出的必填材料。草稿已经保存。", parent=dialog)
+            messagebox.showwarning(tr("报告尚未齐全"), tr("请先补充预览中列出的必填材料。草稿已经保存。"), parent=dialog)
             return
         content = current_draft()["title"].strip() if which == "title" else body
         dialog.clipboard_clear()
         dialog.clipboard_append(content)
-        messagebox.showinfo("已复制", "标题已复制，请粘贴到官方表单标题栏。" if which == "title" else "正文已复制，请粘贴到官方表单描述栏。", parent=dialog)
+        messagebox.showinfo(tr("已复制"), tr("标题已复制，请粘贴到官方表单标题栏。") if which == "title" else tr("正文已复制，请粘贴到官方表单描述栏。"), parent=dialog)
 
     def export() -> None:
         if not save():
             return
         review = review_draft(current_draft())
         if review.missing_required and not messagebox.askyesno(
-            "尚缺材料", "报告仍有必填材料未补齐。可以导出草稿留档，但不建议现在提交。继续导出？", parent=dialog,
+            tr("尚缺材料"), tr("报告仍有必填材料未补齐。可以导出草稿留档，但不建议现在提交。继续导出？"), parent=dialog,
         ):
             tabs.select(preview)
             return
-        target = filedialog.asksaveasfilename(title="保存报告包", defaultextension=".zip",
-                                              initialfile=f"{report_id}-报告包.zip", filetypes=[("ZIP 压缩包", "*.zip")], parent=dialog)
+        target = filedialog.asksaveasfilename(title=tr("保存报告包"), defaultextension=".zip",
+                                              initialfile=tr('{}-报告包.zip').format(report_id), filetypes=[(tr("ZIP 压缩包"), "*.zip")], parent=dialog)
         if not target:
             return
-        names = "\n".join(f"• {path}" for path in paths) or "（无附件）"
-        if not messagebox.askyesno("核对公开内容", "请检查预览正文和以下附件是否含私人或项目敏感内容：\n" + names +
-                                   "\n\n只有手动选择的附件会进入 ZIP；不会自动上传。继续？", parent=dialog):
+        names = "\n".join(f"• {path}" for path in paths) or tr("（无附件）")
+        if not messagebox.askyesno(tr("核对公开内容"), tr("请检查预览正文和以下附件是否含私人或项目敏感内容：\n") + names +
+                                   tr("\n\n只有手动选择的附件会进入 ZIP；不会自动上传。继续？"), parent=dialog):
             return
         try:
             store.export(report_id, target)
         except (BugCompassError, OSError) as exc:
-            messagebox.showerror("导出失败", str(exc), parent=dialog)
+            messagebox.showerror(tr("导出失败"), str(exc), parent=dialog)
             return
-        messagebox.showinfo("已导出", f"报告包已保存到：\n{target}\n\n请在官方表单单独上传所需附件。", parent=dialog)
+        messagebox.showinfo(tr("已导出"), tr('报告包已保存到：\n{}\n\n请在官方表单单独上传所需附件。').format(target), parent=dialog)
 
     def open_submission() -> None:
         if not save():
             return
         if not review_draft(current_draft()).ready_for_review:
             tabs.select(preview)
-            messagebox.showwarning("报告尚未齐全", "请先补充预览中列出的必填材料。", parent=dialog)
+            messagebox.showwarning(tr("报告尚未齐全"), tr("请先补充预览中列出的必填材料。"), parent=dialog)
             return
         webbrowser.open(NEW_ISSUE_URL)
 
@@ -254,18 +255,18 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
 
     actions = ttk.Frame(shell, style="App.TFrame")
     actions.pack(fill="x", pady=(10, 0))
-    ttk.Button(actions, text="保存草稿", command=save, style="Action.TButton").pack(side="left")
-    ttk.Button(actions, text="查看预览", command=lambda: tabs.select(preview), style="Action.TButton").pack(side="left", padx=6)
-    ttk.Button(actions, text="复制标题", command=lambda: copy_value("title"), style="Action.TButton").pack(side="left", padx=6)
-    ttk.Button(actions, text="复制正文", command=lambda: copy_value("body"), style="Action.TButton").pack(side="left")
-    ttk.Button(actions, text="导出 ZIP…", command=export, style="Action.TButton").pack(side="right")
-    ttk.Button(actions, text="打开官方提交页", command=open_submission, style="Primary.TButton").pack(side="right", padx=(0, 6))
+    ttk.Button(actions, text=tr("保存草稿"), command=save, style="Action.TButton").pack(side="left")
+    ttk.Button(actions, text=tr("查看预览"), command=lambda: tabs.select(preview), style="Action.TButton").pack(side="left", padx=6)
+    ttk.Button(actions, text=tr("复制标题"), command=lambda: copy_value("title"), style="Action.TButton").pack(side="left", padx=6)
+    ttk.Button(actions, text=tr("复制正文"), command=lambda: copy_value("body"), style="Action.TButton").pack(side="left")
+    ttk.Button(actions, text=tr("导出 ZIP…"), command=export, style="Action.TButton").pack(side="right")
+    ttk.Button(actions, text=tr("打开官方提交页"), command=open_submission, style="Primary.TButton").pack(side="right", padx=(0, 6))
 
     links = ttk.Frame(shell, style="App.TFrame")
     links.pack(fill="x", pady=(6, 0))
-    ttk.Label(links, text="推荐从 Blender 的“帮助 → 报告 Bug”进入，系统与版本信息会预填。", style="PageSubtitle.TLabel", font=parent._font("SF Pro Text", 9)).pack(side="left")
-    ttk.Button(links, text="查找已有报告", command=lambda: webbrowser.open(ISSUES_URL), style="Ghost.TButton").pack(side="right")
-    ttk.Button(links, text="官方指南", command=lambda: webbrowser.open(REPORT_GUIDE), style="Ghost.TButton").pack(side="right")
+    ttk.Label(links, text=tr("推荐从 Blender 的“帮助 → 报告 Bug”进入，系统与版本信息会预填。"), style="PageSubtitle.TLabel", font=parent._font("SF Pro Text", 9)).pack(side="left")
+    ttk.Button(links, text=tr("查找已有报告"), command=lambda: webbrowser.open(ISSUES_URL), style="Ghost.TButton").pack(side="right")
+    ttk.Button(links, text=tr("官方指南"), command=lambda: webbrowser.open(REPORT_GUIDE), style="Ghost.TButton").pack(side="right")
     dialog.protocol("WM_DELETE_WINDOW", close)
     refresh_preview()
     return dialog

@@ -17,6 +17,7 @@ DEFAULTS: dict[str, Any] = {
     "ui_scale_percent": 100,
     # 调查引擎：codex（默认，行为不变）或某个大模型服务 id（见 llm.py）。
     "active_engine": "codex",
+    "language": "zh",
     # 统计上报默认关闭；只有用户主动打开才会写本地 outbox。
     "telemetry_enabled": False,
     "telemetry_endpoint": "",
