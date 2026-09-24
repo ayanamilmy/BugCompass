@@ -1,6 +1,6 @@
 # BugCompass 0.4
 
-BugCompass 是一个中文优先的本地工具，用来把 Blender Bug 描述整理成可持续调查的案件，并让 Codex 基于本地源码与 Git 证据给出可验证的调查路径。推荐使用图形界面；CLI 保留给高级使用和排错。
+BugCompass 是一个中文优先的本地工具。普通 Blender 用户可以在图形界面中整理可复现 Bug 报告；需要深入排查时，也可以把问题交给源码调查工作台。CLI 保留给高级使用和排错。
 
 ## 0.2 版本变更（稳定性与交付）
 
@@ -71,7 +71,7 @@ bugcompass llm test --provider deepseek   # 测试连接（只发一次最小请
 
 ## 推荐：图形界面
 
-安装后启动：
+Windows 安装包用户可从开始菜单打开 **BugCompass**（安装时也可选择桌面图标），无需打开终端。下面的命令只供源码运行或偏好命令行的用户使用：
 
 ```bash
 python -m bugcompass gui
@@ -79,7 +79,19 @@ python -m bugcompass gui
 bugcompass gui
 ```
 
-完整操作不超过 5 步：
+### 报告 Bug：无需源码、终端或 AI
+
+GUI 默认打开“报告 Bug”模式。点击“新建 Bug 报告”，按“描述问题 → 复现材料 → 核对与提交”填写；点击“保存草稿”或关闭编辑窗口时，草稿保存在本机用户数据目录的 `reports/` 下，稍后可在“本地报告草稿”继续编辑。这里不需要 Blender 源码仓库，也不会启动 Codex、模型服务或 Blender。
+
+建议先在 Blender 中按“帮助 → 报告 Bug”，这会在官方表单预填部分版本和系统信息；也可以按“帮助 → 保存系统信息”取得 `system-info.txt`。BugCompass 引导填写简短标题、出错与最后正常版本、实际与预期行为、逐步复现操作，并手动选择可以公开的简化 `.blend`、截图或日志。请亲自复现、搜索已有及已关闭报告，并检查文件内的私人或项目资料。
+
+“核对与提交”会显示所有缺项和建议，预览按 Blender 报告表单栏目整理的正文。标题与正文可以分别复制到官方表单；附件需在官方页面单独上传。可选导出 ZIP 留档，内有正文、发布前清单、清单元数据和所选附件。未补齐材料时可以保存草稿，界面不会将它标为可提交；导出未完成草稿会再次提示。BugCompass 不会自动提交、运行附件或判断 Bug 已由第三方确认。适用于 Blender 程序本身；扩展或文档问题请先查看[官方报告指南](https://developer.blender.org/docs/handbook/bug_reports/making_good_bug_reports/)选择对应项目。
+
+已有源码调查 Case 可以在“报告 Bug”页点击“从当前调查导入”，建立一份独立草稿。调查中的推断和附件路径仍需逐项人工核对。
+
+### 调查 Bug：需要本地 Blender 源码
+
+源码调查操作不超过 5 步：
 
 1. 点击“选择文件夹”，选择本地 Blender 源码根目录。
 2. 粘贴 Bug 描述，或从 `.md` / `.txt` 文件导入。
@@ -89,13 +101,13 @@ bugcompass gui
 
 想练习排查已经修好的真实历史问题，可以点击左侧“历史 PR 练习”：选择案例后，BugCompass 会在工作区建立一份隔离的修复前源码副本，自动开始调查。完成后先提交自己的根因判断，再揭晓真实修复与五项评分；原来的 Blender 工作树不会被切换。
 
-GUI 不直接接入 OpenAI API，而是调用本机已经安装并登录的 Codex CLI。Codex 会复用本机登录状态，以非交互模式调查当前 Case；“复制调查指令（备用）”只在 Codex CLI 不可用或自动运行失败时使用。主要结果保存在 `investigation.json`，Markdown 只是便于分享的自动导出。
+调查模式默认调用本机已安装并登录的 Codex CLI，也可以选择已配置的大模型 API 引擎；“复制调查指令（备用）”用于自动运行不可用的情况。调查结果保存在 `investigation.json`。独立报告 Bug 模式不会调用任何 AI。
 
-### 可复现报告包
+### 调查 Case 的可复现报告包
 
-打开一个 Case 后，点击案件概览中的“整理可复现报告包…”。核对标题、出错版本、复现步骤、预期与实际行为，再填写系统信息或选择 `system-info.txt`。可以手动选择简化的 `.blend`、截图与崩溃日志；只有所选附件会进入导出的 ZIP。草稿保存在 Case 的 `repro-report.json` 中，断网时也能编辑和导出。草稿只记录附件路径；迁移电脑或移动附件后需要重新选择。
+打开一个 Case 后，点击案件概览中的“整理可复现报告包…”。核对标题、出错版本、复现步骤、预期与实际行为，再填写系统信息或选择 `system-info.txt`。可以手动选择简化的 `.blend`、截图与崩溃日志；只有所选附件会进入导出的 ZIP。草稿保存在 Case 的 `repro-report.json` 中，断网时也能编辑和导出。草稿只记录附件路径；迁移电脑或移动附件后需要重新选择。若要使用面向普通用户的核对与提交界面，可将当前 Case 导入独立的“报告 Bug”模式。
 
-“附件与检查”会提示尚缺的材料，以及最近版本复测、已关闭报告查重、简化示例文件等建议。导出的 ZIP 包含 `报告正文.md`、`发布前检查清单.md`、`manifest.json` 和所选附件。提交前请阅读清单、检查附件是否含敏感内容，将报告正文复制到 Blender 的问题提交表单，并分别上传所需附件。BugCompass 不会自动上传、运行附件、判断问题已经被第三方复现，或替代 Blender 分诊团队确认 Bug。参照 [Blender 报告手册](https://developer.blender.org/docs/handbook/bug_reports/making_good_bug_reports/)、[分诊说明](https://developer.blender.org/docs/handbook/bug_reports/help_triaging_bugs/)与[分诊手册](https://developer.blender.org/docs/handbook/bug_reports/triaging_playbook/)。
+“附件与检查”会提示尚缺的材料，以及最近版本复测、已关闭报告查重、简化示例文件等建议。导出的 ZIP 包含 `报告正文.md`、`发布前检查清单.md`、`manifest.json` 和所选附件。提交前请阅读清单、检查附件是否含敏感内容，将标题填入官方标题栏、报告正文复制到描述栏，并分别上传所需附件。BugCompass 不会自动上传、运行附件、判断问题已经被第三方复现，或替代 Blender 分诊团队确认 Bug。参照 [Blender 报告手册](https://developer.blender.org/docs/handbook/bug_reports/making_good_bug_reports/)、[分诊说明](https://developer.blender.org/docs/handbook/bug_reports/help_triaging_bugs/)与[分诊手册](https://developer.blender.org/docs/handbook/bug_reports/triaging_playbook/)。
 
 为避免一次调查无限消耗额度，GUI 调查固定使用 `gpt-5.6-terra` 和 `low` 推理强度，不继承用户配置中的高强度模式；单次最多运行 180 秒，并要求最多执行 8 组只读搜索。超时后会自动停止，Case 保持可继续。每次运行的原始 JSONL 和最近一次摘要分别保存在 Case 下的 `codex-runs/` 与 `codex-last-run.json`，用于排错。
 
@@ -250,7 +262,7 @@ workspaces/blender-local/
 
 - 只支持 Blender，且知识包只是初始源码导航，并非完整 Blender 知识库。
 - 不抓取在线 issue，不解析附件，不自动复现，也不验证修复。
-- 自动调查需要可用的 Codex CLI 或已配置的模型服务；离线时仍可创建、查看案件和整理可复现报告包。当前也没有数据库、跨 Case 搜索界面、删除管理或协作同步。
+- 自动调查需要可用的 Codex CLI 或已配置的模型服务；独立报告 Bug 模式可完全离线使用。当前也没有数据库、跨 Case 搜索界面、删除管理或协作同步。
 - 黄色和红色实验仍依赖本机已有工具、构建目录和用户逐次授权。当前没有容器隔离；执行前必须认真核对命令、目录和权限提示。
 - 历史练习的自动评分是结构化启发式评分，适合复盘路径质量，但不等于人工专家评审。答案在提交前不会显示在 GUI 或练习副本中；它仍保存在本项目的本地 Pack，属于产品层面的隐藏，不是对能主动绕过规则的用户提供密码学隔离。
 

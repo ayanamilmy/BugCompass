@@ -27,6 +27,8 @@ from .metrics import (
 )
 from .mindmap import MindMapCanvas
 from .practice import PracticeCase, PracticeManager, PracticeReveal
+from .report_gui import open_report_editor
+from .report_mode import ReportStore, SavedReport
 from .repro_report import review_draft
 from .settings import load_settings, save_settings
 from .telemetry import (
@@ -109,11 +111,8 @@ def check_gui() -> tuple[bool, str]:
     except (ImportError, ModuleNotFoundError) as exc:
         return False, f"Tkinter 不可用：{exc}"
     if not CodexRunner.find_executable():
-        return False, (
-            "Tkinter 可以加载，但找不到 Codex CLI。可以安装并登录 Codex，"
-            "或者在设置中配置大模型 API（bugcompass llm init-config）作为调查引擎。"
-        )
-    return True, "Tkinter、BugCompass GUI 和 Codex CLI 均可用。"
+        return True, "Tkinter 与报告 Bug 模式可用；源码调查需要 Codex CLI 或已配置的模型服务。"
+    return True, "Tkinter、报告 Bug 模式和 Codex CLI 均可用。"
 
 
 def run_gui() -> int:
@@ -129,14 +128,7 @@ def run_gui() -> int:
     enable_windows_dpi_awareness()
     install_crash_handler()
 
-    # Codex 缺失不再阻止启动：历史案件仍可离线浏览（安装包交付的关键路径）。
-    codex_warning = None
-    if not CodexRunner.find_executable():
-        codex_warning = (
-            "未找到 Codex CLI：仍可以离线浏览、编辑历史案件和导出备份，"
-            "但自动调查不可用。安装并登录 Codex 后重启 BugCompass 即可。"
-        )
-
+    # 报告模式始终可离线启动；调查引擎只在用户进入调查流程时需要。
     class BugCompassApp(tk.Tk):
         BACKGROUND = "#0B0D10"
         SIDEBAR = "#101217"
@@ -154,12 +146,14 @@ def run_gui() -> int:
 
         def __init__(self) -> None:
             super().__init__()
-            self.title(f"BugCompass — Blender Bug 调查助手 · v{__version__}")
+            self.title(f"BugCompass — Blender Bug 助手 · v{__version__}")
             self.geometry("1120x760")
             self.minsize(940, 650)
             self.configure(background=self.BACKGROUND)
 
             self.controller = GuiController()
+            self.report_store = ReportStore()
+            self.saved_reports: list[SavedReport] = []
             # 资源根目录在源码树 / PyInstaller / 便携版下各不相同（见 resources.py），
             # 打包成安装包后 parents[2] 不再存在，必须走统一的资源定位。
             from .resources import data_root
@@ -219,7 +213,7 @@ def run_gui() -> int:
             # Tk 回调里的异常也要写进崩溃日志（安装版没有控制台可看）。
             install_tk_handler(self)
             self._refresh_recent_cases()
-            self.show_new_page()
+            self.show_report_page()
             self.after(200, self._poll_async)
             self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -281,8 +275,9 @@ def run_gui() -> int:
             brand_text = ttk_module.Frame(brand, style="Sidebar.TFrame")
             brand_text.pack(side="left")
             ttk_module.Label(brand_text, text="BUGCOMPASS", style="Brand.TLabel").pack(anchor="w")
-            ttk_module.Label(brand_text, text="Blender 调查台", style="SidebarTitle.TLabel").pack(anchor="w")
-            ttk_module.Button(sidebar, text="＋  新建调查", command=self.show_new_page, style="Primary.TButton").pack(fill="x", pady=(0, 8))
+            ttk_module.Label(brand_text, text="Blender Bug 助手", style="SidebarTitle.TLabel").pack(anchor="w")
+            ttk_module.Button(sidebar, text="＋  报告 Bug", command=self.show_report_page, style="Primary.TButton").pack(fill="x", pady=(0, 8))
+            ttk_module.Button(sidebar, text="◈  调查 Bug", command=self.show_new_page, style="Action.TButton").pack(fill="x", pady=(0, 8))
             ttk_module.Button(sidebar, text="◫  历史 PR 练习", command=self.show_practice_page, style="Action.TButton").pack(fill="x", pady=(0, 8))
             ttk_module.Button(sidebar, text="🔭  AI 挑选 Issue", command=self._open_issue_scout_dialog, style="Action.TButton").pack(fill="x", pady=(0, 28))
             ttk_module.Label(sidebar, text="最近案件", style="SidebarTitle.TLabel", font=self._font("SF Pro Text", 11, "bold")).pack(anchor="w")
@@ -308,14 +303,46 @@ def run_gui() -> int:
             self.page_host.columnconfigure(0, weight=1)
 
             self.new_page = ttk_module.Frame(self.page_host, style="App.TFrame")
+            self.report_page = ttk_module.Frame(self.page_host, style="App.TFrame")
             self.result_page = ttk_module.Frame(self.page_host, style="App.TFrame")
             self.practice_page = ttk_module.Frame(self.page_host, style="App.TFrame")
-            for page in (self.new_page, self.result_page, self.practice_page):
+            for page in (self.new_page, self.report_page, self.result_page, self.practice_page):
                 page.grid(row=0, column=0, sticky="nsew")
 
+            self._build_report_page(tk_module, ttk_module)
             self._build_new_page(tk_module, ttk_module)
             self._build_practice_page(tk_module, ttk_module)
             self._build_result_page(tk_module, ttk_module)
+
+        def _build_report_page(self, tk_module: Any, ttk_module: Any) -> None:
+            page = self.report_page
+            page.columnconfigure(0, weight=1)
+            page.rowconfigure(2, weight=1)
+            header = ttk_module.Frame(page, style="App.TFrame")
+            header.grid(row=0, column=0, sticky="ew", pady=(0, 18))
+            ttk_module.Label(header, text="REPORT A BUG", style="Eyebrow.TLabel").pack(anchor="w")
+            ttk_module.Label(header, text="报告 Blender Bug", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
+            ttk_module.Label(header, text="从发现问题到准备好官方报告。不需要 Blender 源码、终端或 AI。", style="PageSubtitle.TLabel", wraplength=740).pack(anchor="w")
+
+            intro = ttk_module.LabelFrame(page, text="开始", style="Dark.TLabelframe", padding=18)
+            intro.grid(row=1, column=0, sticky="ew", pady=(0, 14))
+            ttk_module.Label(intro, text="填写亲自看到的现象，准备最小复现文件，核对后复制到 Blender 官方表单。", style="Body.TLabel", wraplength=710).pack(anchor="w")
+            ttk_module.Label(intro, text="适用于 Blender 程序本身。扩展和文档问题请先查看官方报告指南。", style="Muted.TLabel", wraplength=710).pack(anchor="w", pady=(5, 12))
+            buttons = ttk_module.Frame(intro, style="Surface.TFrame")
+            buttons.pack(anchor="w")
+            ttk_module.Button(buttons, text="新建 Bug 报告  →", command=self._new_standalone_report, style="Primary.TButton").pack(side="left")
+            self.import_case_button = ttk_module.Button(buttons, text="从当前调查导入", command=self._import_case_report, style="Action.TButton", state="disabled")
+            self.import_case_button.pack(side="left", padx=(10, 0))
+
+            saved = ttk_module.LabelFrame(page, text="本地报告草稿", style="Dark.TLabelframe", padding=14)
+            saved.grid(row=2, column=0, sticky="nsew")
+            saved.rowconfigure(0, weight=1)
+            saved.columnconfigure(0, weight=1)
+            self.report_list = tk_module.Listbox(saved, background=self.SURFACE_ALT, foreground=self.TEXT,
+                                                  selectbackground=self.BORDER, borderwidth=0, font=self._font("SF Pro Text", 11))
+            self.report_list.grid(row=0, column=0, sticky="nsew")
+            self.report_list.bind("<Double-Button-1>", self._open_selected_report)
+            ttk_module.Button(saved, text="继续编辑所选报告", command=self._open_selected_report, style="Action.TButton").grid(row=1, column=0, sticky="e", pady=(10, 0))
 
         def _build_practice_page(self, tk_module: Any, ttk_module: Any) -> None:
             page = self.practice_page
@@ -524,6 +551,56 @@ def run_gui() -> int:
         def show_new_page(self) -> None:
             self.new_page.tkraise()
             self.copy_status_var.set("")
+            if not CodexRunner.find_executable() and self.settings.get("active_engine") == "codex":
+                self.progress_var.set("源码调查需要先安装并登录 Codex，或在设置中选择已配置的模型服务。")
+
+        def show_report_page(self) -> None:
+            self._refresh_report_list()
+            can_import = self.current_case is not None and self.current_case.practice_session_id is None
+            self.import_case_button.configure(state="normal" if can_import else "disabled")
+            self.report_page.tkraise()
+
+        def _refresh_report_list(self) -> None:
+            self.saved_reports = self.report_store.list_reports()
+            self.report_list.delete(0, "end")
+            for item in self.saved_reports:
+                status = "材料待补" if not item.ready_for_review else "待人工核对"
+                self.report_list.insert("end", f"{item.title}  ·  {status}  ·  {item.report_id}")
+            if not self.saved_reports:
+                self.report_list.insert("end", "还没有报告草稿；点击上方新建。")
+
+        def _open_report(self, report_id: str) -> None:
+            try:
+                open_report_editor(self, self.report_store, report_id, on_saved=self._refresh_report_list)
+            except (BugCompassError, OSError) as exc:
+                self.message_box.showerror("无法打开报告", str(exc), parent=self)
+
+        def _new_standalone_report(self) -> None:
+            try:
+                report_id = self.report_store.create()
+            except (BugCompassError, OSError) as exc:
+                self.message_box.showerror("无法新建报告", str(exc), parent=self)
+                return
+            self._refresh_report_list()
+            self._open_report(report_id)
+
+        def _import_case_report(self) -> None:
+            if self.current_case is None or self.current_case.practice_session_id is not None:
+                return
+            try:
+                report_id = self.report_store.create(from_case=self.current_case.case_dir)
+            except (BugCompassError, OSError) as exc:
+                self.message_box.showerror("无法导入调查", str(exc), parent=self)
+                return
+            self._refresh_report_list()
+            self.message_box.showinfo("调查内容已导入", "请逐项核对事实和附件；调查摘要不能替代亲自复现。", parent=self)
+            self._open_report(report_id)
+
+        def _open_selected_report(self, _event: Any = None) -> None:
+            selected = self.report_list.curselection()
+            if not selected or selected[0] >= len(self.saved_reports):
+                return
+            self._open_report(self.saved_reports[selected[0]].report_id)
 
         def show_practice_page(self) -> None:
             if self.busy:
@@ -1686,6 +1763,11 @@ def run_gui() -> int:
                 tk.Checkbutton(review_page, text=label, variable=variable, background=self.SURFACE, foreground=self.TEXT, activebackground=self.SURFACE, activeforeground=self.TEXT, selectcolor=self.SURFACE_ALT, anchor="w").pack(anchor="w")
                 flags[field] = variable
 
+            ttk.Label(review_page, text="最近复测的 Blender 版本（如已复测）", style="Heading.TLabel", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w", pady=(8, 3))
+            latest_version_var = tk.StringVar(value=draft["latest_tested_version"])
+            ttk.Entry(review_page, textvariable=latest_version_var, style="Dark.TEntry").pack(fill="x")
+            entries["latest_tested_version"] = latest_version_var
+
             steps_editor = text_boxes["steps"]
             steps_editor.edit_modified(False)
 
@@ -1738,9 +1820,10 @@ def run_gui() -> int:
             def show_review() -> None:
                 result = review_draft(current_draft())
                 if result.missing_required:
-                    review_var.set("尚缺材料：" + "、".join(result.missing_required) + "。\n可导出草稿，但提交前请补齐。")
+                    status = "尚缺材料：" + "、".join(result.missing_required) + "。\n可导出草稿，但提交前请补齐。"
                 else:
-                    review_var.set("必填材料已填写。请继续人工核对版本、复现、附件内容和报告真实性。")
+                    status = "必填材料已填写。请继续人工核对版本、复现、附件内容和报告真实性。"
+                review_var.set(status + "\n建议核对：" + "；".join(result.suggestions))
 
             def save() -> bool:
                 try:
@@ -2546,7 +2629,5 @@ def run_gui() -> int:
             f"请换用带完整 Tk 支持的 Python，并在本地图形桌面中启动。详情：{detail}"
         )
         return 2
-    if codex_warning is not None:
-        messagebox.showwarning("Codex CLI 未安装", codex_warning, parent=app)
     app.mainloop()
     return 0

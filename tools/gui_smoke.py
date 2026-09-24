@@ -129,6 +129,70 @@ def main() -> int:
     try:
         app.update()
 
+        # 普通用户从独立报告模式起步，无需源码仓库或调查进程。
+        check("默认进入报告 Bug 模式", app.report_page.winfo_ismapped())
+        app._new_standalone_report()
+        app.update()
+        check("无源码可创建报告草稿", len(app.report_store.list_reports()) == 1)
+        check("报告模式未启动调查引擎", not app.codex_active and app.active_case_id is None)
+        standalone_dialogs = [w for w in app.winfo_children() if isinstance(w, tkinter.Toplevel)]
+        check("独立报告编辑窗口打开", any("报告 Bug" in w.title() for w in standalone_dialogs))
+        for dialog in standalone_dialogs:
+            dialog.destroy()
+        with mock.patch.object(CodexRunner, "find_executable", staticmethod(lambda: None)):
+            available, detail = gui.check_gui()
+        check("没有 Codex 仍可使用报告模式", available and "报告 Bug 模式可用" in detail)
+
+        # 普通用户的最后一步：复制官方表单正文并导出附件包。
+        report_id = app.report_store.list_reports()[0].report_id
+        report_draft = app.report_store.load(report_id)
+        report_draft.update({
+            "title": "默认场景移动立方体后崩溃", "broken_version": "5.0.1", "system_info": "Windows 11；RTX 4060",
+            "steps": "1. 打开默认场景\n2. 移动立方体", "expected": "物体移动", "actual": "Blender 退出",
+            "reproduced": True, "factory_startup": True,
+        })
+        app.report_store.save(report_id, report_draft)
+        app._open_report(report_id)
+        app.update()
+        editor = next(w for w in app.winfo_children() if isinstance(w, tkinter.Toplevel))
+
+        def find_button(widget, title):  # noqa: ANN001
+            for child in widget.winfo_children():
+                if isinstance(child, tkinter.ttk.Button) and child.cget("text") == title:
+                    return child
+                found = find_button(child, title)
+                if found is not None:
+                    return found
+            return None
+
+        def find_widgets(widget, kind):  # noqa: ANN001
+            found = []
+            for child in widget.winfo_children():
+                if isinstance(child, kind):
+                    found.append(child)
+                found.extend(find_widgets(child, kind))
+            return found
+
+        reproduced_box = next(box for box in find_widgets(editor, tkinter.Checkbutton)
+                              if box.cget("text") == "我已按所写步骤再次复现")
+        actual_editor = next(box for box in find_widgets(editor, tkinter.Text)
+                             if box.cget("state") == "normal" and box.get("1.0", "end-1c") == "Blender 退出")
+        actual_editor.insert("end", "。")
+        app.update()
+        check("修改现象后要求重新确认复现", not bool(editor.getvar(reproduced_box.cget("variable"))))
+        reproduced_box.invoke()
+
+        with mock.patch("tkinter.messagebox.showinfo"):
+            find_button(editor, "复制正文").invoke()
+        check("报告正文可复制到官方表单", "**Blender Version**" in editor.clipboard_get())
+        report_zip = Path(work) / "standalone-report.zip"
+        with mock.patch("tkinter.filedialog.asksaveasfilename", return_value=str(report_zip)), \
+             mock.patch("tkinter.messagebox.askyesno", return_value=True), \
+             mock.patch("tkinter.messagebox.showinfo"):
+            find_button(editor, "导出 ZIP…").invoke()
+        check("独立报告包可导出", report_zip.is_file())
+        editor.destroy()
+
         # 使用独立临时工作区，避免污染仓库目录
         from bugcompass.gui_controller import GuiController
         from bugcompass.practice import PracticeManager
