@@ -452,6 +452,77 @@ class RunnerTests(unittest.TestCase):
         data = read_investigation(self.case_dir / "investigation.json")
         self.assertEqual(data["hypotheses"], [])
 
+    def test_truncated_final_is_regenerated_with_larger_budget(self) -> None:
+        investigator = self.investigator()
+        # 即使被截断的回复碰巧包含合法 JSON，也不能把不完整的调查写盘。
+        partial = llm.ChatResponse(
+            content=json.dumps(valid_investigation("case-1"), ensure_ascii=False),
+            tool_calls=[], usage={"output_tokens": 4096}, finish_reason="length",
+        )
+        complete = llm.ChatResponse(
+            content=json.dumps(valid_investigation("case-1"), ensure_ascii=False),
+            tool_calls=[], usage={"output_tokens": 5000}, finish_reason="stop",
+        )
+        calls = []
+
+        def fake_chat(provider, messages, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 2:
+                self.assertEqual(read_investigation(self.case_dir / "investigation.json")["hypotheses"], [])
+                self.assertIn("输出长度上限", messages[-1]["content"])
+            return partial if len(calls) == 1 else complete
+
+        with mock.patch.object(llm_runner, "chat_completion", side_effect=fake_chat), \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-ok"}):
+            result = investigator.run(self.view, action="initial")
+        self.assertTrue(result.investigation_updated, result.error_detail)
+        self.assertEqual(calls[1]["max_tokens"], llm_runner.FINAL_MAX_TOKENS)
+        self.assertIsNone(calls[1]["tools"])
+        self.assertEqual(len(read_investigation(self.case_dir / "investigation.json")["hypotheses"]), 3)
+
+    def test_malformed_json_retry_receives_parse_error(self) -> None:
+        investigator = self.investigator()
+        malformed = llm.ChatResponse(content='{"summary": {"problem": "问题" "actual_behavior": "异常"}}',
+                                     tool_calls=[], usage={}, finish_reason="stop")
+        complete = llm.ChatResponse(content=json.dumps(valid_investigation("case-1"), ensure_ascii=False),
+                                    tool_calls=[], usage={}, finish_reason="stop")
+        prompts = []
+
+        def fake_chat(provider, messages, **kwargs):
+            prompts.append(messages[-1]["content"])
+            return malformed if len(prompts) == 1 else complete
+
+        with mock.patch.object(llm_runner, "chat_completion", side_effect=fake_chat), \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-ok"}):
+            result = investigator.run(self.view, action="initial")
+        self.assertTrue(result.investigation_updated, result.error_detail)
+        self.assertIn("结构化结果无效", prompts[1])
+        self.assertIn("delimiter", prompts[1])
+
+    def test_forced_final_uses_larger_budget_and_reports_repeat_truncation(self) -> None:
+        investigator = LLMInvestigator(Path(self._tmp.name) / "repo", make_provider(max_turns=1))
+        tool_response = llm.ChatResponse(
+            content="", tool_calls=[{"id": "c1", "name": "read_file", "arguments": {"path": "source/blender/a.cc"}}],
+            usage={}, finish_reason="tool_calls",
+        )
+        truncated = llm.ChatResponse(content='{"summary": {', tool_calls=[], usage={}, finish_reason="length")
+        calls = []
+
+        def fake_chat(provider, messages, **kwargs):
+            calls.append((messages, kwargs))
+            return tool_response if len(calls) == 1 else truncated
+
+        with mock.patch.object(llm_runner, "chat_completion", side_effect=fake_chat), \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-ok"}):
+            result = investigator.run(self.view, action="initial")
+        self.assertFalse(result.investigation_updated)
+        self.assertIn("输出长度上限", result.error_detail)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[1][1]["max_tokens"], llm_runner.FINAL_MAX_TOKENS)
+        self.assertIn("紧凑", calls[1][0][-1]["content"])
+        self.assertEqual(calls[2][1]["max_tokens"], llm_runner.FINAL_MAX_TOKENS)
+        self.assertEqual(read_investigation(self.case_dir / "investigation.json")["hypotheses"], [])
+
     def test_unknown_action_rejected(self) -> None:
         investigator = self.investigator()
         with mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-ok"}):
