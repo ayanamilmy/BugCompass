@@ -559,15 +559,92 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(completed["summary"]["problem"], "更新的问题")
         self.assertEqual(previous["summary"]["problem"], "测试问题")
 
-    def test_compact_draft_rejects_wrong_case_and_unattributed_evidence(self) -> None:
+    def test_compact_draft_uses_current_case_and_marks_unattributed_evidence(self) -> None:
         draft = valid_investigation("case-1")
         draft["case_id"] = "another-case"
-        with self.assertRaisesRegex(ValueError, "case_id"):
-            LLMInvestigator._complete_draft(draft, "case-1")
-        draft["case_id"] = "case-1"
         del draft["evidence"][0]["source_type"]
-        with self.assertRaisesRegex(ValueError, "source_type"):
-            LLMInvestigator._complete_draft(draft, "case-1")
+        completed = LLMInvestigator._complete_draft(draft, "case-1")
+        self.assertEqual(completed["case_id"], "case-1")
+        self.assertEqual(completed["evidence"][0]["source_type"], "unknown")
+        self.assertEqual(completed["evidence"][0]["kind"], "inference")
+        self.assertIn("来源", completed["unknowns"][-1]["question"])
+
+    def test_missing_source_type_from_real_failure_shape_saves_case(self) -> None:
+        investigator = self.investigator()
+        draft = valid_investigation("case-1")
+        del draft["evidence"][0]["source_type"]
+        response = llm.ChatResponse(content=json.dumps(draft, ensure_ascii=False), tool_calls=[],
+                                    usage={"output_tokens": 1665}, finish_reason="stop")
+        with mock.patch.object(llm_runner, "chat_completion", return_value=response) as chat, \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-ok"}):
+            result = investigator.run(self.view, action="initial")
+        self.assertTrue(result.investigation_updated, result.error_detail)
+        self.assertEqual(chat.call_count, 1)
+        saved = read_investigation(self.case_dir / "investigation.json")
+        self.assertEqual(len(saved["hypotheses"]), 3)
+        self.assertEqual(saved["evidence"][0]["kind"], "inference")
+        self.assertEqual(saved["evidence"][0]["source_type"], "unknown")
+        self.assertTrue(any("来源" in item["question"] for item in saved["unknowns"]))
+
+    def test_invalid_optional_experiment_does_not_discard_core_paths(self) -> None:
+        investigator = self.investigator()
+        draft = valid_investigation("case-1")
+        draft["suggested_experiments"] = [{"id": "X", "title": "不完整实验"}]
+        response = llm.ChatResponse(content=json.dumps(draft, ensure_ascii=False), tool_calls=[],
+                                    usage={}, finish_reason="stop")
+        with mock.patch.object(llm_runner, "chat_completion", return_value=response) as chat, \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-ok"}):
+            result = investigator.run(self.view, action="initial")
+        self.assertTrue(result.investigation_updated, result.error_detail)
+        self.assertEqual(chat.call_count, 1)
+        saved = read_investigation(self.case_dir / "investigation.json")
+        self.assertEqual(len(saved["hypotheses"]), 3)
+        self.assertEqual(saved["suggested_experiments"], [])
+        self.assertTrue(any("附加调查" in item["question"] for item in saved["unknowns"]))
+        summary = json.loads((self.case_dir / "llm-last-run.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["status_note"], "完成（部分内容待核实）")
+
+    def test_sparse_draft_with_bad_graph_still_saves_traced_paths(self) -> None:
+        investigator = self.investigator()
+        draft = {
+            "hypotheses": [{"claim": f"路径 {index} 可能有问题"} for index in range(1, 4)],
+            "evidence": ["尚未注明出处的观察"],
+            "unknowns": ["具体版本是什么？"],
+            "causal_graph": {"nodes": "错误格式", "edges": []},
+        }
+        response = llm.ChatResponse(content=json.dumps(draft, ensure_ascii=False), tool_calls=[],
+                                    usage={}, finish_reason="stop")
+        with mock.patch.object(llm_runner, "chat_completion", return_value=response) as chat, \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-ok"}):
+            result = investigator.run(self.view, action="initial")
+        self.assertTrue(result.investigation_updated, result.error_detail)
+        self.assertEqual(chat.call_count, 1)
+        saved = read_investigation(self.case_dir / "investigation.json")
+        self.assertIn("标题", saved["summary"]["problem"])
+        self.assertEqual([item["priority"] for item in saved["hypotheses"]], ["high", "medium", "low"])
+        self.assertEqual(saved["evidence"][0]["kind"], "inference")
+        self.assertEqual(saved["evidence"][0]["source_type"], "unknown")
+        self.assertEqual(saved["causal_graph"], {"nodes": [], "edges": []})
+
+    def test_unexpected_model_field_types_do_not_crash_run(self) -> None:
+        investigator = self.investigator()
+        draft = valid_investigation("case-1")
+        draft["stage"] = {"unexpected": True}
+        draft["hypotheses"][0]["priority"] = []
+        draft["hypotheses"][0]["status"] = {}
+        draft["hypotheses"][0]["estimated_cost"] = []
+        draft["evidence"][0]["kind"] = {}
+        draft["evidence"][0]["source_type"] = []
+        response = llm.ChatResponse(content=json.dumps(draft, ensure_ascii=False), tool_calls=[],
+                                    usage={}, finish_reason="stop")
+        with mock.patch.object(llm_runner, "chat_completion", return_value=response), \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-ok"}):
+            result = investigator.run(self.view, action="initial")
+        self.assertTrue(result.investigation_updated, result.error_detail)
+        saved = read_investigation(self.case_dir / "investigation.json")
+        self.assertEqual(saved["stage"], "paths")
+        self.assertEqual(saved["hypotheses"][0]["priority"], "high")
+        self.assertEqual(saved["evidence"][0]["kind"], "inference")
 
     def test_forced_final_uses_larger_budget_and_reports_repeat_truncation(self) -> None:
         investigator = LLMInvestigator(Path(self._tmp.name) / "repo", make_provider(max_turns=1))
