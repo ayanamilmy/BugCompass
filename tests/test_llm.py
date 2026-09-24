@@ -542,5 +542,45 @@ class EnsureProvidersTests(IsolatedHomeTestCase):
         self.assertEqual([provider.id for provider in providers], ["custom"])  # 不覆盖
 
 
+class ModelSelectionTests(IsolatedHomeTestCase):
+    """模型可选：预设建议 + set_provider_model 持久化（只动配置，不动密钥）。"""
+
+    def test_presets_have_model_options(self) -> None:
+        providers = ensure_providers()
+        by_id = {provider.id: provider for provider in providers}
+        self.assertIn("deepseek-reasoner", by_id["deepseek"].model_options)
+        self.assertIn("qwen-max", by_id["qwen"].model_options)
+
+    def test_set_provider_model_persists(self) -> None:
+        ensure_providers()
+        providers = llm.set_provider_model("deepseek", "deepseek-reasoner")
+        self.assertEqual(next(p for p in providers if p.id == "deepseek").model, "deepseek-reasoner")
+        reloaded = llm.load_providers()
+        self.assertEqual(next(p for p in reloaded if p.id == "deepseek").model, "deepseek-reasoner")
+        # 其他服务不受影响
+        self.assertEqual(next(p for p in reloaded if p.id == "qwen").model, "qwen-plus")
+
+    def test_custom_model_appended_to_options(self) -> None:
+        ensure_providers()
+        providers = llm.set_provider_model("deepseek", "my-custom-finetune")
+        deepseek = next(p for p in providers if p.id == "deepseek")
+        self.assertEqual(deepseek.model, "my-custom-finetune")
+        self.assertIn("my-custom-finetune", deepseek.model_options)
+
+    def test_set_provider_model_rejects_bad_input(self) -> None:
+        ensure_providers()
+        with self.assertRaises(llm.LLMError):
+            llm.set_provider_model("deepseek", "   ")
+        with self.assertRaises(llm.LLMError):
+            llm.set_provider_model("no-such-provider", "m")
+
+    def test_model_options_roundtrip(self) -> None:
+        provider = llm.LLMProviderConfig(
+            id="x", label="X", base_url="https://e.test/v1", model="m1", model_options=["m1", "m2"],
+        )
+        restored = llm._provider_from_dict(provider.to_dict())
+        self.assertEqual(restored.model_options, ["m1", "m2"])
+
+
 if __name__ == "__main__":
     unittest.main()

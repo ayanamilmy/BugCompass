@@ -50,6 +50,8 @@ class LLMProviderConfig:
     api_key_env: str = ""
     max_turns: int = 12
     timeout_seconds: float = 120.0
+    #: 常用模型建议（下拉候选，可自由输入任意模型名）。
+    model_options: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -60,6 +62,7 @@ class LLMProviderConfig:
             "api_key_env": self.api_key_env,
             "max_turns": self.max_turns,
             "timeout_seconds": self.timeout_seconds,
+            "model_options": list(self.model_options),
         }
 
     @property
@@ -78,6 +81,7 @@ PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "label": "DeepSeek",
         "base_url": "https://api.deepseek.com/v1",
         "model": "deepseek-chat",
+        "model_options": ["deepseek-chat", "deepseek-reasoner"],
         "api_key_env": "DEEPSEEK_API_KEY",
         "max_turns": 12,
         "timeout_seconds": 120,
@@ -87,6 +91,7 @@ PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "label": "通义千问（DashScope 兼容模式）",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "model": "qwen-plus",
+        "model_options": ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-long"],
         "api_key_env": "DASHSCOPE_API_KEY",
         "max_turns": 12,
         "timeout_seconds": 120,
@@ -96,6 +101,7 @@ PROVIDER_PRESETS: tuple[dict[str, Any], ...] = (
         "label": "Kimi（月之暗面）",
         "base_url": "https://api.moonshot.cn/v1",
         "model": "kimi-k2-0905-preview",
+        "model_options": ["kimi-k2-0905-preview", "moonshot-v1-8k", "moonshot-v1-32k", "moonshot-v1-128k"],
         "api_key_env": "MOONSHOT_API_KEY",
         "max_turns": 12,
         "timeout_seconds": 120,
@@ -146,11 +152,14 @@ def _provider_from_dict(raw: Any) -> LLMProviderConfig:
     model = str(raw.get("model", "")).strip()
     if not model:
         raise LLMError(f"服务 {provider_id} 缺少 model。")
+    raw_options = raw.get("model_options")
+    model_options = [str(item).strip() for item in raw_options if str(item).strip()] if isinstance(raw_options, list) else []
     return LLMProviderConfig(
         id=provider_id,
         label=str(raw.get("label", provider_id)).strip() or provider_id,
         base_url=base_url,
         model=model,
+        model_options=model_options,
         api_key_env=str(raw.get("api_key_env", "")).strip(),
         max_turns=max(1, min(30, int(raw.get("max_turns", 12) or 12))),
         timeout_seconds=max(10.0, min(600.0, float(raw.get("timeout_seconds", 120) or 120))),
@@ -184,6 +193,31 @@ def ensure_providers() -> list[LLMProviderConfig]:
     """零命令行初始化：配置文件不存在时写入预设模板（绝不覆盖已有文件），然后加载。"""
     write_providers_template()
     return load_providers()
+
+
+def set_provider_model(provider_id: str, model: str) -> list[LLMProviderConfig]:
+    """更新某服务的默认模型并写回 providers.json。只动配置，永不触碰密钥。"""
+    model = model.strip()
+    if not model:
+        raise LLMError("模型名不能为空。")
+    write_providers_template()
+    path = providers_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LLMError(f"无法读取 {path}：{exc}") from exc
+    raw_providers = data.get("providers") if isinstance(data, dict) else None
+    if not isinstance(raw_providers, list):
+        raise LLMError(f"{path} 里没有可用的 providers 列表。")
+    for raw in raw_providers:
+        if isinstance(raw, dict) and str(raw.get("id", "")).strip() == provider_id:
+            raw["model"] = model
+            options = raw.get("model_options")
+            if isinstance(options, list) and model not in options:
+                options.append(model)
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            return load_providers()
+    raise LLMError(f"providers.json 里没有服务 {provider_id}。")
 
 
 def provider_by_id(providers: list[LLMProviderConfig], provider_id: str) -> LLMProviderConfig | None:

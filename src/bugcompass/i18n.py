@@ -14,6 +14,9 @@ _LANGUAGE = "zh"
 
 
 EN: dict[str, str] = {
+    "模型": "Model",
+    "模型已保存：{}": "Model saved: {}",
+    "（详情已记录到 ~/.bugcompass/logs/llm-test.log）": " (details logged to ~/.bugcompass/logs/llm-test.log)",
     "providers.json 读取失败：修正或删除该文件后重开设置即可。": "Failed to read providers.json: fix or delete the file, then reopen Settings.",
     "界面语言": "Interface language",
     "切换后重启应用即可完全生效。": "Restart the app to fully apply the change.",

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bugcompass"
-version = "0.5.4"
+version = "0.6.0"
 description = "面向 Blender Bug 调查的本地案件工作区工具"
 readme = "README.zh-CN.md"
 requires-python = ">=3.11"

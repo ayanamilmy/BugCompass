@@ -6,6 +6,7 @@ import webbrowser
 from typing import Any, Callable
 
 from .i18n import tr
+from .widgets import fit_dialog
 from .report_mode import ReportStore
 from .repro_report import REPORT_GUIDE, format_official_body, review_draft
 from .workspace import BugCompassError
@@ -23,8 +24,7 @@ def open_report_editor(parent: Any, store: ReportStore, report_id: str, *, on_sa
     draft = store.load(report_id)
     dialog = tk.Toplevel(parent)
     dialog.title(tr("报告 Bug · Blender"))
-    dialog.geometry("860x760")
-    dialog.minsize(720, 620)
+    parent.after_idle(lambda d=dialog: fit_dialog(d, 740, 620))
     dialog.configure(background=parent.BACKGROUND)
     dialog.transient(parent)
     dialog.grab_set()

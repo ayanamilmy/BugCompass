@@ -8,7 +8,7 @@
 ; 注意：升级版本时同步修改下面的 MyAppVersion。
 
 #define MyAppName "BugCompass"
-#define MyAppVersion "0.5.4"
+#define MyAppVersion "0.6.0"
 #define MyAppPublisher "BugCompass contributors"
 #define MyAppExeName "BugCompass.exe"
 

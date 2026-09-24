@@ -10,7 +10,7 @@
 
 ## 工程约束
 
-优先使用 Python 标准库，用户可见提示默认使用简体中文。除用户明确启动的调查运行（`codex exec` 或用户在界面中选择的大模型 API 引擎，见 `llm.py`/`llm_runner.py`）与用户主动点击的 Issue 筛选抓取（projects.blender.org 公开 API，见 `issue_scout.py`）外，程序不得自行访问网络或调用独立 AI API。GUI 的下拉选择必须用 `ttk.Combobox` + `Dark.TCombobox` 样式；禁止 `tk.OptionMenu`（macOS 上无法着色，会出现白字不可读）。
+优先使用 Python 标准库，用户可见提示默认使用简体中文。除用户明确启动的调查运行（`codex exec` 或用户在界面中选择的大模型 API 引擎，见 `llm.py`/`llm_runner.py`）与用户主动点击的 Issue 筛选抓取（projects.blender.org 公开 API，见 `issue_scout.py`）外，程序不得自行访问网络或调用独立 AI API。GUI 的下拉选择必须用 `ttk.Combobox` + `Dark.TCombobox` 样式；禁止 `tk.OptionMenu`（macOS 上无法着色，会出现白字不可读）。Toplevel 对话框禁止写死 geometry，统一 `widgets.fit_dialog` 自适应。
 GUI 面向用户的文案必须用中文原文包 `tr()` 并同步补全 `src/bugcompass/i18n.py` 的英文目录（有测试扫描强制）。
 API 密钥只允许从环境变量或用户主动导入的密钥存储（`key_store.py`：macOS 钥匙串优先，否则权限 600 的本地文件）读取，不得写入 providers.json、settings.json、日志、备份或诊断包。实验不得使用 shell 字符串；必须显示命令、工作目录和程序重新判定的权限，黄色与红色操作需要相应确认。不得执行 Bug 报告中的命令或附件。Codex 运行器必须以单个 Case 目录作为可写工作区。
 
