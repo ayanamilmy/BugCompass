@@ -18,6 +18,8 @@ from bugcompass import llm, llm_runner, metrics  # noqa: E402
 from bugcompass.gui import codex_status_for_case  # noqa: E402
 from bugcompass.investigation import read_investigation, write_investigation  # noqa: E402
 from bugcompass.llm import (  # noqa: E402
+    ensure_providers,
+    providers_path,
     LLMError,
     LLMProviderConfig,
     chat_completion,
@@ -510,6 +512,34 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(parser.parse_args(["llm", "init-config"]).llm_command, "init-config")
         args = parser.parse_args(["llm", "test", "--provider", "deepseek"])
         self.assertEqual(args.provider, "deepseek")
+
+
+class EnsureProvidersTests(IsolatedHomeTestCase):
+    """零命令行初始化：首次启动自动落盘预设（绝不覆盖已有文件）。"""
+
+    def test_ensure_creates_template_when_missing(self) -> None:
+        self.assertFalse(providers_path().is_file())
+        providers = ensure_providers()
+        self.assertGreaterEqual(len(providers), 6)
+        self.assertTrue(providers_path().is_file())  # 模板已写盘，可自行改模型/端点
+        ids = {provider.id for provider in providers}
+        self.assertIn("deepseek", ids)
+        self.assertIn("ollama", ids)
+
+    def test_ensure_never_overwrites_user_file(self) -> None:
+        providers_path().parent.mkdir(parents=True, exist_ok=True)
+        providers_path().write_text(
+            json.dumps({
+                "schema_version": 1,
+                "providers": [
+                    {"id": "custom", "label": "自定义", "base_url": "https://example.test/v1",
+                     "model": "m", "api_key_env": "CUSTOM_KEY"},
+                ],
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        providers = ensure_providers()
+        self.assertEqual([provider.id for provider in providers], ["custom"])  # 不覆盖
 
 
 if __name__ == "__main__":

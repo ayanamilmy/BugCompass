@@ -180,6 +180,12 @@ def load_providers() -> list[LLMProviderConfig]:
     return providers
 
 
+def ensure_providers() -> list[LLMProviderConfig]:
+    """零命令行初始化：配置文件不存在时写入预设模板（绝不覆盖已有文件），然后加载。"""
+    write_providers_template()
+    return load_providers()
+
+
 def provider_by_id(providers: list[LLMProviderConfig], provider_id: str) -> LLMProviderConfig | None:
     return next((provider for provider in providers if provider.id == provider_id), None)
 

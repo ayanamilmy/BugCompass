@@ -14,6 +14,7 @@ _LANGUAGE = "zh"
 
 
 EN: dict[str, str] = {
+    "providers.json 读取失败：修正或删除该文件后重开设置即可。": "Failed to read providers.json: fix or delete the file, then reopen Settings.",
     "界面语言": "Interface language",
     "切换后重启应用即可完全生效。": "Restart the app to fully apply the change.",
     "语言已切换。重启 BugCompass 后全部界面生效。": "Language switched. Restart BugCompass to apply it everywhere.",

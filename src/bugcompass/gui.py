@@ -18,7 +18,7 @@ from .dpi import apply_scaling, enable_windows_dpi_awareness, scale_percent
 from .gui_controller import CaseView, GuiController
 from .issue_scout import IssueRecord, IssueScore, ScoutError, deterministic_taken, enrich_with_comments, export_markdown as export_scan_markdown, fetch_open_issues, filter_issues, issue_to_bug_text, load_last_scan, save_scan, scan_records_from_cache, scan_scores_from_cache
 from .key_store import delete_key, get_key, save_key, storage_hint
-from .llm import LLMError, LLMProviderConfig, load_providers, resolve_api_key, test_connection
+from .llm import LLMError, LLMProviderConfig, ensure_providers, resolve_api_key, test_connection
 from .llm_runner import LLMInvestigator
 from .metrics import (
     collect_case_metrics,
@@ -168,7 +168,7 @@ def run_gui() -> int:
             self.practice_manager = PracticeManager(self._data_root_path, self.controller.workspace_path)
             # 大模型 API 引擎：默认不启用（active_engine=codex），配置见 llm.py。
             try:
-                self.llm_providers: list[LLMProviderConfig] = load_providers()
+                self.llm_providers: list[LLMProviderConfig] = ensure_providers()
                 self.llm_provider_error = ""
             except LLMError as exc:
                 self.llm_providers = []
@@ -499,6 +499,8 @@ def run_gui() -> int:
             self.engine_combo.pack(side="left")
             self.engine_combo.bind("<<ComboboxSelected>>", self._on_engine_changed)
             ttk_module.Label(engine_row, text=tr("默认 Codex CLI；大模型 API 可在设置里配置与测试"), style="Muted.TLabel").pack(side="left", padx=(10, 0))
+            self._engine_key_button = ttk_module.Button(engine_row, text=tr("导入密钥…"), command=self._import_key_for_current_engine, style="Primary.TButton")
+            self._refresh_engine_key_button()
 
             action_row = ttk_module.Frame(page, style="App.TFrame")
             action_row.grid(row=5, column=0, sticky="ew")
@@ -1576,6 +1578,25 @@ def run_gui() -> int:
                 self._llm_investigators[provider.id] = investigator
             return investigator
 
+        def _import_key_for_current_engine(self) -> None:
+            provider = self._active_provider()
+            if provider is not None:
+                self._import_api_key_dialog(provider)
+
+        def _refresh_engine_key_button(self) -> None:
+            """当前引擎缺密钥时，在引擎下拉旁显示内联「导入密钥…」。"""
+            button = getattr(self, "_engine_key_button", None)
+            if button is None:
+                return
+            provider = self._active_provider()
+            if provider is not None and provider.needs_key:
+                try:
+                    resolve_api_key(provider)
+                except LLMError:
+                    button.pack(side="left", padx=(10, 0))
+                    return
+            button.pack_forget()
+
         def _on_engine_changed(self, _event: Any = None) -> None:
             selection = self.engine_var.get()
             provider = next(
@@ -1586,6 +1607,7 @@ def run_gui() -> int:
             save_settings(self.settings)
             name = provider.display_name if provider else "Codex CLI"
             self.progress_var.set(tr('调查引擎已切换为 {}（已保存）。').format(name))
+            self._refresh_engine_key_button()
             if provider is not None and provider.needs_key:
                 try:
                     resolve_api_key(provider)
@@ -2369,6 +2391,7 @@ def run_gui() -> int:
 
                     def apply() -> None:
                         status_var.set((tr("✅ 密钥已保存，连接成功") if ok else "❌ ") + message)
+                        self._refresh_engine_key_button()
 
                     self._main_queue.put(apply)
 
@@ -2499,15 +2522,23 @@ def run_gui() -> int:
 
                 ttk.Button(llm_row, text=tr("测试连接"), command=run_test, style="Action.TButton").pack(side="left", padx=(10, 0))
                 ttk.Button(llm_row, text=tr("设为当前引擎"), command=use_provider, style="Action.TButton").pack(side="left", padx=(8, 0))
-                if chosen_provider().needs_key:
-                    ttk.Button(llm_row, text=tr("导入密钥…"), command=lambda: self._import_api_key_dialog(chosen_provider()), style="Primary.TButton").pack(side="left", padx=(8, 0))
-                chosen = chosen_provider()
-                if chosen.needs_key:
-                    stored = tr("已导入 ✓") if get_key(chosen.id) else tr("未导入")
-                    key_hint = tr('密钥：{} · 环境变量名 {} · 存储：{}').format(stored, chosen.api_key_env, storage_hint())
-                else:
-                    key_hint = tr("本地服务，无需密钥")
-                ttk.Label(llm_box, text=key_hint, style="Muted.TLabel").pack(anchor="w", pady=(4, 2))
+                import_btn = ttk.Button(llm_row, text=tr("导入密钥…"), style="Primary.TButton")
+                import_btn.pack(side="left", padx=(8, 0))
+                key_hint_label = ttk.Label(llm_box, text="", style="Muted.TLabel")
+                key_hint_label.pack(anchor="w", pady=(4, 2))
+
+                def refresh_provider_ui(*_args: Any) -> None:
+                    chosen = chosen_provider()
+                    if chosen.needs_key:
+                        import_btn.configure(state="normal", command=lambda: self._import_api_key_dialog(chosen))
+                        stored = tr("已导入 ✓") if get_key(chosen.id) else tr("未导入")
+                        key_hint_label.configure(text=tr('密钥：{} · 环境变量名 {} · 存储：{}').format(stored, chosen.api_key_env, storage_hint()))
+                    else:
+                        import_btn.configure(state="disabled", command=lambda: None)
+                        key_hint_label.configure(text=tr("本地服务，无需密钥"))
+
+                refresh_provider_ui()
+                provider_combo.bind("<<ComboboxSelected>>", refresh_provider_ui)
             else:
                 ttk.Label(llm_box, text=tr("没有可用服务：运行 bugcompass llm init-config 生成配置模板后重开设置。"), style="Muted.TLabel", justify="left").pack(anchor="w")
 
