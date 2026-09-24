@@ -606,7 +606,7 @@ class ListModelsTests(IsolatedHomeTestCase):
             def read(self) -> bytes:
                 return json.dumps({"data": [{"id": "zz-v4"}, {"id": "aa-v2"}, {"id": "aa-v2"}, {"id": "  "}, "not-a-dict"]}).encode("utf-8")
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, context=None):
             requests_seen.append(request)
             return Response()
 
@@ -632,7 +632,7 @@ class ListModelsTests(IsolatedHomeTestCase):
             def read(self) -> bytes:
                 return json.dumps({"data": [{"id": "llama3.1:8b"}]}).encode("utf-8")
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, context=None):
             requests_seen.append(request)
             return Response()
 
@@ -653,7 +653,7 @@ class ListModelsTests(IsolatedHomeTestCase):
     def test_http_401_is_friendly(self) -> None:
         import urllib.error
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, context=None):
             raise urllib.error.HTTPError(request.full_url, 401, "Unauthorized", {}, None)
 
         with mock.patch.dict(os.environ, {"TEST_LIST_MODELS_KEY": "sk-bad"}), \
@@ -661,6 +661,65 @@ class ListModelsTests(IsolatedHomeTestCase):
             with self.assertRaises(llm.LLMError) as ctx:
                 llm.list_models(self._provider())
         self.assertIn("拒绝了密钥", str(ctx.exception))
+
+
+class SSLContextTests(IsolatedHomeTestCase):
+    """HTTPS 证书：certifi 优先（修 python.org Python 在 macOS 上的证书缺失坑）。"""
+
+    def test_ssl_context_none_without_certifi(self) -> None:
+        with mock.patch.dict(sys.modules, {"certifi": None}):
+            self.assertIsNone(llm.ssl_context())
+
+    def test_requests_pass_ssl_context(self) -> None:
+        sentinel = object()
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self) -> bytes:
+                return json.dumps({"data": [{"id": "m"}]}).encode("utf-8")
+
+        seen: dict[str, object] = {}
+
+        def fake_urlopen(request, timeout=None, context=None):
+            seen["context"] = context
+            return Response()
+
+        provider = llm.LLMProviderConfig(id="t", label="T", base_url="https://e.test/v1", model="m", api_key_env="")
+        with mock.patch.dict(os.environ, {"BUGCOMPASS_HOME": self._home.name}), \
+             mock.patch.object(llm, "ssl_context", return_value=sentinel), \
+             mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            llm.list_models(provider)
+        self.assertIs(seen["context"], sentinel)
+
+    def test_list_models_ssl_error_gives_guidance(self) -> None:
+        import ssl as ssl_module
+        import urllib.error
+
+        def fake_urlopen(request, timeout=None, context=None):
+            raise urllib.error.URLError(ssl_module.SSLError(1, "certificate verify failed"))
+
+        provider = llm.LLMProviderConfig(id="t", label="T", base_url="https://e.test/v1", model="m", api_key_env="")
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(llm.LLMError) as ctx:
+                llm.list_models(provider)
+        self.assertIn("certifi", str(ctx.exception))
+        self.assertIn("证书", str(ctx.exception))
+
+    def test_chat_completion_ssl_error_gives_guidance(self) -> None:
+        import ssl as ssl_module
+        import urllib.error
+
+        provider = llm.LLMProviderConfig(id="t", label="T", base_url="https://e.test/v1", model="m", api_key_env="")
+        with mock.patch.object(llm, "_post_json", side_effect=urllib.error.URLError(ssl_module.SSLError(1, "certificate verify failed"))):
+            with self.assertRaises(llm.LLMError) as ctx:
+                llm.chat_completion(provider, [{"role": "user", "content": "hi"}])
+        self.assertIn("安全连接", str(ctx.exception))
+        self.assertIn("certifi", str(ctx.exception))
 
 
 if __name__ == "__main__":
