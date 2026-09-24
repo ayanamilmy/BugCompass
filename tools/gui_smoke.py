@@ -230,7 +230,6 @@ def main() -> int:
         # 1b) 调查引擎选择器：默认 Codex，大模型服务已加载
         check("调查引擎选择器默认 Codex", app.engine_var.get().startswith("Codex CLI"), app.engine_var.get())
         check("LLM 预设已加载", isinstance(app.llm_providers, list) and len(app.llm_providers) >= 5, f"{len(app.llm_providers)} 个")
-        options = app._engine_options()
         app.settings["active_engine"] = app.llm_providers[0].id
         check("引擎切换为 LLM", app._engine_label() == app.llm_providers[0].label, app._engine_label())
         app.settings["active_engine"] = "codex"
@@ -358,6 +357,16 @@ def main() -> int:
         app.update()
         open_dialogs = [w for w in app.winfo_children() if isinstance(w, tkinter.Toplevel)]
         check("设置对话框打开", len(open_dialogs) >= 1)
+        # 下拉必须是 ttk.Combobox（tk.OptionMenu 在 macOS 上无法着色，曾致白字不可读）
+        from tkinter import ttk as _ttk_smoke
+
+        def _walk_smoke(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from _walk_smoke(child)
+
+        combos = [w for d in open_dialogs for w in _walk_smoke(d) if isinstance(w, _ttk_smoke.Combobox)]
+        check("设置含深色 Combobox 下拉", len(combos) >= 1 and all(str(c.cget("style")) == "Dark.TCombobox" for c in combos))
         for dialog in open_dialogs:
             dialog.destroy()
 

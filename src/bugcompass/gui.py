@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import queue
 import threading
 from dataclasses import dataclass
@@ -255,6 +256,27 @@ def run_gui() -> int:
             style.configure("Dark.TEntry", fieldbackground=self.SURFACE_ALT, foreground=self.TEXT, insertcolor=self.TEXT, padding=10, borderwidth=1)
             style.configure("Dark.TLabelframe", background=self.SURFACE, bordercolor=self.BORDER, relief="solid", borderwidth=1)
             style.configure("Dark.TLabelframe.Label", background=self.SURFACE, foreground=self.MUTED, font=self._font("SF Pro Text", 9, "bold"))
+            # macOS(Aqua) 会无视自定义深色 fieldbackground、却应用前景色——
+            # 深底白字在 Mac 上会变成“浅底白字”不可读。因此分平台：
+            # macOS 顺应系统浅色底 + 黑字；Windows/Linux 背景设置生效，用深底白字。
+            if sys.platform == "darwin":
+                style.configure(
+                    "Dark.TCombobox",
+                    fieldbackground="#FFFFFF", background="#E9E9EC",
+                    foreground="#111111", arrowcolor="#111111",
+                    bordercolor="#C9C9CE", insertcolor="#111111",
+                )
+                self.option_add("*TCombobox*Listbox*Background", "#FFFFFF")
+                self.option_add("*TCombobox*Listbox*Foreground", "#111111")
+                self.option_add("*TCombobox*Listbox*selectBackground", "#C7E0FF")
+                self.option_add("*TCombobox*Listbox*selectForeground", "#111111")
+            else:
+                style.configure("Dark.TCombobox", fieldbackground=self.SURFACE_ALT, background=self.SURFACE_ALT, foreground=self.TEXT, arrowcolor=self.TEXT, bordercolor=self.BORDER, insertcolor=self.TEXT)
+                # 下拉弹出列表是独立 Listbox，用 option_add 全局着色。
+                self.option_add("*TCombobox*Listbox*Background", self.SURFACE_ALT)
+                self.option_add("*TCombobox*Listbox*Foreground", self.TEXT)
+                self.option_add("*TCombobox*Listbox*selectBackground", "#654127")
+                self.option_add("*TCombobox*Listbox*selectForeground", self.TEXT)
             style.configure("Scout.Treeview", background=self.SURFACE_ALT, fieldbackground=self.SURFACE_ALT, foreground=self.TEXT, borderwidth=0, rowheight=30)
             style.configure("Scout.Treeview.Heading", background=self.SURFACE, foreground=self.MUTED, borderwidth=0, relief="flat", font=self._font("SF Pro Text", 9, "bold"))
             style.map("Scout.Treeview", background=[("selected", "#654127")], foreground=[("selected", self.TEXT)])
@@ -472,6 +494,7 @@ def run_gui() -> int:
                 values=self._engine_options(),
                 state="readonly",
                 width=32,
+                style="Dark.TCombobox",
             )
             self.engine_combo.pack(side="left")
             self.engine_combo.bind("<<ComboboxSelected>>", self._on_engine_changed)
@@ -2036,12 +2059,7 @@ def run_gui() -> int:
                 engine_names.append(provider.display_name + (tr("（未导入密钥）") if missing else ""))
             if engine_names:
                 self._scout_engine_var.set(engine_names[0])
-                engine_menu = tk.OptionMenu(row2, self._scout_engine_var, *engine_names)
-                engine_menu.configure(
-                    background=self.SURFACE_ALT, foreground=self.TEXT,
-                    activebackground=self.BORDER, activeforeground=self.TEXT,
-                    highlightthickness=0, bd=0,
-                )
+                engine_menu = ttk.Combobox(row2, textvariable=self._scout_engine_var, values=engine_names, state="readonly", width=30, style="Dark.TCombobox")
                 engine_menu.pack(side="left")
             else:
                 ttk.Label(row2, text=tr("尚未配置大模型服务（⚙ 设置 → 模型服务）"), style="Status.TLabel").pack(side="left")
@@ -2404,13 +2422,13 @@ def run_gui() -> int:
                     parent=dialog,
                 )
 
-            language_menu = tk.OptionMenu(language_card, language_var, *language_names.values(), command=change_language)
-            language_menu.configure(
-                background=self.SURFACE_ALT, foreground=self.TEXT,
-                activebackground=self.BORDER, activeforeground=self.TEXT,
-                highlightthickness=0, bd=0, font=("SF Pro Text", 11),
+            language_menu = ttk.Combobox(
+                language_card, textvariable=language_var, values=list(language_names.values()),
+                state="readonly", width=12, style="Dark.TCombobox",
+                font=self._font("SF Pro Text", 11),
             )
             language_menu.pack(side="left")
+            language_menu.bind("<<ComboboxSelected>>", change_language)
             ttk.Label(language_card, text=tr("切换后重启应用即可完全生效。"), style="Muted.TLabel").pack(side="left", padx=(12, 0))
 
             # 界面缩放
@@ -2448,12 +2466,7 @@ def run_gui() -> int:
                 llm_row.pack(fill="x")
                 self._llm_test_var = tk.StringVar(value=provider_names[0])
                 ttk.Label(llm_row, text=tr("服务"), style="Muted.TLabel").pack(side="left", padx=(0, 6))
-                provider_combo = tk.OptionMenu(llm_row, self._llm_test_var, *provider_names)
-                provider_combo.configure(
-                    background=self.SURFACE_ALT, foreground=self.TEXT,
-                    activebackground=self.BORDER, activeforeground=self.TEXT,
-                    highlightthickness=0, bd=0,
-                )
+                provider_combo = ttk.Combobox(llm_row, textvariable=self._llm_test_var, values=provider_names, state="readonly", width=28, style="Dark.TCombobox")
                 provider_combo.pack(side="left")
                 self._llm_status_var = tk.StringVar(value="")
                 ttk.Label(llm_box, textvariable=self._llm_status_var, style="Status.TLabel", justify="left").pack(anchor="w", pady=(6, 4))
