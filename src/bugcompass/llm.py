@@ -203,18 +203,22 @@ def write_providers_template() -> Path:
 
 
 def resolve_api_key(provider: LLMProviderConfig) -> str | None:
-    """从环境变量读取密钥。需要密钥而未设置时给出可照做的设置指引。"""
+    """解析密钥：环境变量优先，其次用户在 GUI 里导入的本地密钥存储。"""
     if not provider.api_key_env:
         return None
     value = _env_get(provider.api_key_env)
     if value:
         return value
+    from .key_store import get_key
+
+    stored = get_key(provider.id)
+    if stored:
+        return stored
     raise LLMError(
-        f"服务 {provider.label} 需要密钥：请在环境变量 {provider.api_key_env} 中设置。\n"
-        "macOS/Linux：在 ~/.zshrc 或 ~/.bashrc 加一行 export "
-        f"{provider.api_key_env}=你的密钥，然后重开终端。\n"
-        f"Windows（PowerShell）：[Environment]::SetEnvironmentVariable('{provider.api_key_env}', '你的密钥', 'User') "
-        "后重启 BugCompass。"
+        f"服务 {provider.label} 还没有密钥。两种导入方式（任选其一）：\n"
+        "1. 图形界面：⚙ 设置 → 模型服务 → 导入密钥…（推荐，存入系统钥匙串或本地加密权限文件）；\n"
+        f"2. 环境变量：设置 {provider.api_key_env} 后重启 BugCompass"
+        "（macOS/Linux 在 ~/.zshrc 加 export，Windows 用系统属性设置）。"
     )
 
 

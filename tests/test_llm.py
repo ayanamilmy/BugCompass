@@ -345,6 +345,11 @@ class RunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
+        home_patcher = mock.patch.dict(os.environ, {"BUGCOMPASS_HOME": self._tmp.name, "BUGCOMPASS_KEY_STORE": "file"})
+        home_patcher.start()
+        self.addCleanup(home_patcher.stop)
+        self.addCleanup(_reset_caches)
+        _reset_caches()
         base = Path(self._tmp.name)
         self.repo = base / "repo"
         (self.repo / "source" / "blender").mkdir(parents=True)

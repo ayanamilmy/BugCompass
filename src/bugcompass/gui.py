@@ -13,7 +13,8 @@ from .codex_runner import CodexRunBusyError, CodexRunResult, CodexRunner
 from .diagnostics import export_bundle, install_crash_handler, install_tk_handler
 from .dpi import apply_scaling, enable_windows_dpi_awareness, scale_percent
 from .gui_controller import CaseView, GuiController
-from .llm import LLMError, LLMProviderConfig, load_providers, test_connection
+from .key_store import delete_key, get_key, save_key, storage_hint
+from .llm import LLMError, LLMProviderConfig, load_providers, resolve_api_key, test_connection
 from .llm_runner import LLMInvestigator
 from .metrics import (
     collect_case_metrics,
@@ -1481,6 +1482,16 @@ def run_gui() -> int:
             save_settings(self.settings)
             name = provider.display_name if provider else "Codex CLI"
             self.progress_var.set(f"调查引擎已切换为 {name}（已保存）。")
+            if provider is not None and provider.needs_key:
+                try:
+                    resolve_api_key(provider)
+                except LLMError:
+                    if self.message_box.askyesno(
+                        "需要 API 密钥",
+                        f"{provider.display_name} 还没有密钥，现在导入吗？\n（也可以稍后在 ⚙ 设置 → 模型服务里导入）",
+                        parent=self,
+                    ):
+                        self._import_api_key_dialog(provider)
 
         def _poll_async(self) -> None:
             """把工作线程排进来的 UI 更新放到主线程执行。"""
@@ -1854,6 +1865,75 @@ def run_gui() -> int:
             except OSError:
                 pass
 
+        # ------------------------------------------------------- 密钥导入
+        def _import_api_key_dialog(self, provider: LLMProviderConfig) -> None:
+            """图形化导入 API 密钥（零命令行）。存入钥匙串或本地权限文件，永不进入备份/诊断包。"""
+            dialog = tk.Toplevel(self)
+            dialog.title("导入 API 密钥")
+            dialog.geometry("560x400")
+            dialog.minsize(500, 380)
+            dialog.configure(background=self.BACKGROUND)
+            dialog.transient(self)
+            dialog.grab_set()
+            shell = ttk.Frame(dialog, style="App.TFrame", padding=24)
+            shell.pack(fill="both", expand=True)
+            ttk.Label(shell, text="API KEY", style="Eyebrow.TLabel").pack(anchor="w")
+            ttk.Label(shell, text="导入密钥", style="Title.TLabel", font=self._font("SF Pro Display", 20, "bold")).pack(anchor="w", pady=(4, 6))
+            ttk.Label(shell, text=f"{provider.label} · {provider.model}", style="Status.TLabel").pack(anchor="w")
+            ttk.Label(
+                shell,
+                text="密钥将保存在" + storage_hint() + "，\n不会写入 providers.json、备份、诊断包或统计上报；也可以随时在这里删除。",
+                style="Muted.TLabel", justify="left",
+            ).pack(anchor="w", pady=(10, 12))
+            entry = tk.Entry(
+                shell, show="•",
+                background=self.SURFACE_ALT, foreground=self.TEXT, insertbackground=self.TEXT,
+                relief="flat", highlightthickness=1, highlightbackground=self.BORDER,
+                highlightcolor=self.ORANGE, font=("SF Mono", 12),
+            )
+            existing = get_key(provider.id)
+            if existing:
+                entry.insert(0, existing)
+            entry.pack(fill="x", ipady=6)
+            entry.focus_set()
+            status_var = tk.StringVar(value="已存在导入的密钥，可直接覆盖更新。" if existing else "")
+            ttk.Label(shell, textvariable=status_var, style="PageStatus.TLabel", justify="left").pack(anchor="w", pady=(8, 0))
+
+            def save_and_test() -> None:
+                value = entry.get().strip()
+                if not value:
+                    status_var.set("请先粘贴密钥。")
+                    return
+                try:
+                    mode_used = save_key(provider.id, value)
+                except Exception as exc:
+                    status_var.set(f"保存失败：{exc}")
+                    return
+                status_var.set(f"已保存（{storage_hint() if mode_used == 'file' else 'macOS 钥匙串'}），正在测试连接……")
+
+                def work() -> None:
+                    ok, message = test_connection(provider)
+
+                    def apply() -> None:
+                        status_var.set(("✅ 密钥已保存，连接成功" if ok else "❌ ") + message)
+
+                    self._main_queue.put(apply)
+
+                threading.Thread(target=work, daemon=True).start()
+
+            def remove_key() -> None:
+                delete_key(provider.id)
+                entry.delete(0, "end")
+                status_var.set("已删除本地存储的密钥。")
+
+            row = ttk.Frame(shell, style="App.TFrame")
+            row.pack(fill="x", pady=(16, 0))
+            ttk.Button(row, text="取消", command=dialog.destroy, style="Ghost.TButton").pack(side="right")
+            ttk.Button(row, text="保存并测试  →", command=save_and_test, style="Primary.TButton").pack(side="right", padx=(0, 8))
+            if existing:
+                ttk.Button(row, text="删除已存密钥", command=remove_key, style="Ghost.TButton").pack(side="left")
+            dialog.bind("<Return>", lambda _e: save_and_test())
+
         # -------------------------------------------------------------- 设置
         def _open_settings(self) -> None:
             dialog = tk.Toplevel(self)
@@ -1942,8 +2022,14 @@ def run_gui() -> int:
 
                 ttk.Button(llm_row, text="测试连接", command=run_test, style="Action.TButton").pack(side="left", padx=(10, 0))
                 ttk.Button(llm_row, text="设为当前引擎", command=use_provider, style="Action.TButton").pack(side="left", padx=(8, 0))
+                if chosen_provider().needs_key:
+                    ttk.Button(llm_row, text="导入密钥…", command=lambda: self._import_api_key_dialog(chosen_provider()), style="Primary.TButton").pack(side="left", padx=(8, 0))
                 chosen = chosen_provider()
-                key_hint = f"密钥环境变量：{chosen.api_key_env}" if chosen.needs_key else "本地服务，无需密钥"
+                if chosen.needs_key:
+                    stored = "已导入 ✓" if get_key(chosen.id) else "未导入"
+                    key_hint = f"密钥：{stored} · 环境变量名 {chosen.api_key_env} · 存储：{storage_hint()}"
+                else:
+                    key_hint = "本地服务，无需密钥"
                 ttk.Label(llm_box, text=key_hint, style="Muted.TLabel").pack(anchor="w", pady=(4, 2))
             else:
                 ttk.Label(llm_box, text="没有可用服务：运行 bugcompass llm init-config 生成配置模板后重开设置。", style="Muted.TLabel", justify="left").pack(anchor="w")
