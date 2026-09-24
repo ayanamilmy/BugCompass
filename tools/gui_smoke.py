@@ -161,6 +161,32 @@ def main() -> int:
         key_store.delete_key(app.llm_providers[0].id)
         check("密钥删除", key_store.get_key(app.llm_providers[0].id) is None)
 
+        # 1d) AI 挑选 Issue 对话框（打开不联网；显示离线缓存或空态）
+        app._open_issue_scout_dialog()
+        app.update()
+        scout_dialogs = [w for w in app.winfo_children() if isinstance(w, __import__("tkinter").Toplevel) and w.title().startswith("AI 挑选")]
+        check("Issue 筛选对话框可打开", len(scout_dialogs) == 1)
+        check("筛选对话框含结果表格", hasattr(app, "_scout_tree"))
+        # 占用过滤：默认隐藏「已有人接手」的 issue
+        from bugcompass.issue_scout import IssueRecord, IssueScore
+        demo_records = [
+            IssueRecord(101, "空闲 issue", "u", "b", ["Type/Bug", "Meta/Good First Issue"], "2026-09-01", 0),
+            IssueRecord(102, "被占用 issue", "u", "b", ["Type/Bug"], "2026-09-01", 3),
+        ]
+        demo_scores = {
+            101: IssueScore(101, 8, "入门", "复现清晰"),
+            102: IssueScore(102, 9, "进阶", "r", taken=True, taken_evidence="已指派给 dev"),
+        }
+        app._scout_populate(demo_records, demo_scores)
+        visible = app._scout_tree.get_children()
+        check("占用过滤：默认只显示空闲 issue", list(visible) == ["101"], str(visible))
+        app._scout_hide_taken_var.set(False)
+        app._scout_populate(demo_records, demo_scores)
+        visible = app._scout_tree.get_children()
+        check("取消勾选后显示全部", set(visible) == {"101", "102"}, str(visible))
+        for d in scout_dialogs:
+            d.destroy()
+
         # 2) 渲染结果页（含滚动容器、指标卡、思维导图）
         app._show_case(view)
         app.update()
