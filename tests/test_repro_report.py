@@ -36,6 +36,7 @@ class ReproReportTests(unittest.TestCase):
         draft.update({
             "broken_version": "4.5.1",
             "working_version": "4.4.3",
+            "latest_tested_version": "4.5.1",
             "system_info": "Windows 11；NVIDIA GPU；驱动 555",
             "reproduced": True,
             "tested_latest": True,

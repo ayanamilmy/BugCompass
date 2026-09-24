@@ -16,7 +16,7 @@ DRAFT_NAME = "repro-report.json"
 REPORT_GUIDE = "https://developer.blender.org/docs/handbook/bug_reports/making_good_bug_reports/"
 TRIAGE_GUIDE = "https://developer.blender.org/docs/handbook/bug_reports/help_triaging_bugs/"
 TRIAGE_PLAYBOOK = "https://developer.blender.org/docs/handbook/bug_reports/triaging_playbook/"
-TEXT_FIELDS = ("title", "broken_version", "working_version", "steps", "expected", "actual", "system_info")
+TEXT_FIELDS = ("title", "broken_version", "working_version", "latest_tested_version", "steps", "expected", "actual", "system_info")
 BOOL_FIELDS = ("reproduced", "factory_startup", "tested_latest", "duplicate_checked", "simplified_file", "crash")
 
 
@@ -37,15 +37,20 @@ class PackageResult:
     review: ReportReview
 
 
-def _case_dir(case_dir: str | Path) -> Path:
+def _report_dir(case_dir: str | Path) -> Path:
     path = Path(case_dir).expanduser().resolve()
-    if not (path / "case.json").is_file():
-        raise BugCompassError(f"找不到 Case：{path}")
+    if not (path / "case.json").is_file() and not (path / "report.json").is_file():
+        raise BugCompassError(f"找不到报告或 Case：{path}")
     return path
 
 
+def blank_draft() -> dict[str, Any]:
+    """创建不依赖源码、调查或网络的空报告。"""
+    return {"schema_version": 1, **{name: "" for name in TEXT_FIELDS}, **{name: False for name in BOOL_FIELDS}, "attachments": []}
+
+
 def _default_draft(case_dir: Path) -> dict[str, Any]:
-    draft: dict[str, Any] = {"schema_version": 1, **{name: "" for name in TEXT_FIELDS}, **{name: False for name in BOOL_FIELDS}, "attachments": []}
+    draft = blank_draft()
     source = case_dir / "issue-original.md"
     try:
         for line in source.read_text(encoding="utf-8").splitlines():
@@ -92,7 +97,7 @@ def validate_draft(draft: Any) -> dict[str, Any]:
 
 
 def load_draft(case_dir: str | Path) -> dict[str, Any]:
-    case = _case_dir(case_dir)
+    case = _report_dir(case_dir)
     path = case / DRAFT_NAME
     if not path.exists():
         return _default_draft(case)
@@ -103,7 +108,7 @@ def load_draft(case_dir: str | Path) -> dict[str, Any]:
 
 
 def save_draft(case_dir: str | Path, draft: dict[str, Any]) -> None:
-    case = _case_dir(case_dir)
+    case = _report_dir(case_dir)
     try:
         write_json(case / DRAFT_NAME, validate_draft(draft))
     except OSError as exc:
@@ -122,13 +127,29 @@ def review_draft(draft: dict[str, Any]) -> ReportReview:
     ):
         if not data[field]:
             missing.append(label)
-    filenames = [Path(value).name.casefold() for value in data["attachments"]]
+    filenames = []
+    invalid_files = []
+    for value in data["attachments"]:
+        source = Path(value).expanduser()
+        try:
+            if source.is_symlink() or not source.is_file():
+                raise OSError("附件不可用")
+            with source.open("rb") as stream:
+                stream.read(1)
+        except OSError:
+            invalid_files.append(source.name or "未命名附件")
+        else:
+            filenames.append(source.name.casefold())
+    if invalid_files:
+        missing.append("所选附件不存在或无法读取：" + "、".join(invalid_files))
     if not data["system_info"] and "system-info.txt" not in filenames:
         missing.append("系统、显卡与驱动信息，或 system-info.txt 附件")
     if not data["factory_startup"] and not any(name.endswith(".blend") for name in filenames):
         missing.append("简化的 .blend 文件，或确认可从默认场景复现")
     if not data["reproduced"]:
         missing.append("按所列步骤再次复现并确认结果")
+    if data["tested_latest"] and not data["latest_tested_version"]:
+        missing.append("已复测的最新 Blender 完整版本")
 
     suggestions = []
     if not data["working_version"]:
@@ -156,25 +177,23 @@ def _attachment_files(draft: dict[str, Any]) -> list[tuple[Path, str]]:
     return files
 
 
-def _report_markdown(draft: dict[str, Any], files: list[tuple[Path, str]]) -> str:
+def format_official_body(draft: dict[str, Any]) -> str:
+    """按 Blender Bug Report 表单的正文栏目生成可直接复制的文本；标题单独填写。"""
+    data = validate_draft(draft)
     def value(name: str) -> str:
-        return draft[name] or "（待补充）"
+        return data[name] or "（待补充）"
 
-    attachment_list = "\n".join(f"- {name}" for _, name in files) or "- （尚无附件）"
-    has_system_info_file = any(Path(name).name.casefold().endswith("system-info.txt") for _, name in files)
-    system_info = draft["system_info"] or ("详见附件中的 system-info.txt。" if has_system_info_file else "（待补充）")
-    working = draft["working_version"] or "未知，尚未确认是否为回归"
-    reproduction = "已由报告者按所列步骤复现" if draft["reproduced"] else "尚未由报告者再次确认复现"
-    startup = "可从默认场景复现" if draft["factory_startup"] else "请使用附件中的简化 .blend 文件（如有）"
+    filenames = [Path(name).name.casefold() for name in data["attachments"]]
+    has_system_info_file = "system-info.txt" in filenames
+    system_info = data["system_info"] or ("详见附件中的 system-info.txt（请在官方表单单独上传）。" if has_system_info_file else "（待补充）")
+    working = data["working_version"] or "未知"
+    latest = f"\n最新版本复测：{data['latest_tested_version']}" if data["latest_tested_version"] else ""
+    startup = "从默认场景开始。" if data["factory_startup"] else "打开单独上传的简化 .blend 文件（如适用）。"
     return (
-        f"# {value('title')}\n\n"
-        f"## Blender 版本\n\n出现问题：{value('broken_version')}\n\n最后正常：{working}\n\n"
-        f"## 系统信息\n\n{system_info}\n\n"
-        f"## 复现步骤\n\n{value('steps')}\n\n"
-        f"复现状态：{reproduction}。{startup}。\n\n"
-        f"## 预期行为\n\n{value('expected')}\n\n"
-        f"## 实际行为\n\n{value('actual')}\n\n"
-        f"## 附件\n\n{attachment_list}\n"
+        f"**System Information**\n{system_info}\n\n"
+        f"**Blender Version**\nBroken: {value('broken_version')}\nWorked: {working}{latest}\n\n"
+        f"**Short description of error**\n实际行为：{value('actual')}\n预期行为：{value('expected')}\n\n"
+        f"**Exact steps for others to reproduce the error**\n{startup}\n{value('steps')}\n"
     )
 
 
@@ -186,16 +205,15 @@ def _checklist_markdown(review: ReportReview) -> str:
         "此清单仅根据用户填写内容检查缺项，不会运行 Blender，也不代表 Blender 分诊团队已确认 Bug。\n\n"
         f"## 尚缺材料\n\n{required}\n\n"
         f"## 建议核对\n\n{suggestions}\n\n"
-        "请先人工检查报告与附件。将 `报告正文.md` 复制到 Blender 的问题提交表单，"
+        "请先人工检查报告与附件。将报告标题填写到官方标题栏，将 `报告正文.md` 复制到描述栏，"
         "并单独上传需要公开的附件；不要把整个 ZIP 直接粘贴进正文。\n\n"
         f"官方参考：\n- {REPORT_GUIDE}\n- {TRIAGE_GUIDE}\n- {TRIAGE_PLAYBOOK}\n"
     )
 
 
-def export_package(case_dir: str | Path, output_path: str | Path, draft: dict[str, Any] | None = None) -> PackageResult:
+def export_draft_package(draft: dict[str, Any], output_path: str | Path, *, report_id: str = "", case_id: str = "") -> PackageResult:
     """只打包所选附件；不运行附件，也不读取或打包 Blender 源码。"""
-    case = _case_dir(case_dir)
-    data = validate_draft(draft) if draft is not None else load_draft(case)
+    data = validate_draft(draft)
     review = review_draft(data)
     files = _attachment_files(data)
     output = Path(output_path).expanduser().resolve()
@@ -203,18 +221,22 @@ def export_package(case_dir: str | Path, output_path: str | Path, draft: dict[st
         raise BugCompassError(f"报告包已存在，不会覆盖：{output}")
     manifest = {
         "schema_version": 1,
-        "case_id": case.name,
+        "title": data["title"],
         "generated_at": utc_now(),
         "ready_for_review": review.ready_for_review,
         "missing_required": review.missing_required,
         "attachments": [name for _, name in files],
     }
+    if report_id:
+        manifest["report_id"] = report_id
+    if case_id:
+        manifest["case_id"] = case_id
     created = False
     try:
         with output.open("xb") as stream:
             created = True
             with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
-                archive.writestr("报告正文.md", _report_markdown(data, files))
+                archive.writestr("报告正文.md", format_official_body(data))
                 archive.writestr("发布前检查清单.md", _checklist_markdown(review))
                 archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
                 for source, name in files:
@@ -224,3 +246,9 @@ def export_package(case_dir: str | Path, output_path: str | Path, draft: dict[st
             output.unlink(missing_ok=True)
         raise BugCompassError(f"无法生成可复现报告包：{exc}") from exc
     return PackageResult(output, review)
+
+
+def export_package(case_dir: str | Path, output_path: str | Path, draft: dict[str, Any] | None = None) -> PackageResult:
+    case = _report_dir(case_dir)
+    data = validate_draft(draft) if draft is not None else load_draft(case)
+    return export_draft_package(data, output_path, case_id=case.name if (case / "case.json").is_file() else "", report_id=case.name if (case / "report.json").is_file() else "")
