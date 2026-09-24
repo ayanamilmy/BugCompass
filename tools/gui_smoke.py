@@ -358,6 +358,16 @@ def main() -> int:
         app.update()
         open_dialogs = [w for w in app.winfo_children() if isinstance(w, tkinter.Toplevel)]
         check("设置对话框打开", len(open_dialogs) >= 1)
+        # 下拉必须是 ttk.Combobox（tk.OptionMenu 在 macOS 上无法着色，曾致白字不可读）
+        from tkinter import ttk as _ttk_smoke
+
+        def _walk_smoke(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from _walk_smoke(child)
+
+        combos = [w for d in open_dialogs for w in _walk_smoke(d) if isinstance(w, _ttk_smoke.Combobox)]
+        check("设置含深色 Combobox 下拉", len(combos) >= 1 and all(str(c.cget("style")) == "Dark.TCombobox" for c in combos))
         for dialog in open_dialogs:
             dialog.destroy()
 
