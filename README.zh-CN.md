@@ -72,6 +72,12 @@ bugcompass gui
 
 GUI 不直接接入 OpenAI API，而是调用本机已经安装并登录的 Codex CLI。Codex 会复用本机登录状态，以非交互模式调查当前 Case；“复制调查指令（备用）”只在 Codex CLI 不可用或自动运行失败时使用。主要结果保存在 `investigation.json`，Markdown 只是便于分享的自动导出。
 
+### 可复现报告包
+
+打开一个 Case 后，点击案件概览中的“整理可复现报告包…”。核对标题、出错版本、复现步骤、预期与实际行为，再填写系统信息或选择 `system-info.txt`。可以手动选择简化的 `.blend`、截图与崩溃日志；只有所选附件会进入导出的 ZIP。草稿保存在 Case 的 `repro-report.json` 中，断网时也能编辑和导出。草稿只记录附件路径；迁移电脑或移动附件后需要重新选择。
+
+“附件与检查”会提示尚缺的材料，以及最近版本复测、已关闭报告查重、简化示例文件等建议。导出的 ZIP 包含 `报告正文.md`、`发布前检查清单.md`、`manifest.json` 和所选附件。提交前请阅读清单、检查附件是否含敏感内容，将报告正文复制到 Blender 的问题提交表单，并分别上传所需附件。BugCompass 不会自动上传、运行附件、判断问题已经被第三方复现，或替代 Blender 分诊团队确认 Bug。参照 [Blender 报告手册](https://developer.blender.org/docs/handbook/bug_reports/making_good_bug_reports/)、[分诊说明](https://developer.blender.org/docs/handbook/bug_reports/help_triaging_bugs/)与[分诊手册](https://developer.blender.org/docs/handbook/bug_reports/triaging_playbook/)。
+
 为避免一次调查无限消耗额度，GUI 调查固定使用 `gpt-5.6-terra` 和 `low` 推理强度，不继承用户配置中的高强度模式；单次最多运行 180 秒，并要求最多执行 8 组只读搜索。超时后会自动停止，Case 保持可继续。每次运行的原始 JSONL 和最近一次摘要分别保存在 Case 下的 `codex-runs/` 与 `codex-last-run.json`，用于排错。
 
 界面使用纯 Tkinter/ttk 自绘的深色调查工作台风格：统一的侧栏、阶段导航、卡片、状态色和 Blender 橙色强调。没有引入主题包或其他运行时依赖。
@@ -225,7 +231,7 @@ workspaces/blender-local/
 
 - 只支持 Blender，且知识包只是初始源码导航，并非完整 Blender 知识库。
 - 不抓取在线 issue，不解析附件，不自动复现，也不验证修复。
-- GUI 依赖本机已安装且已登录的 Codex CLI；离线时只能创建和查看案件。当前也没有数据库、跨 Case 搜索、删除管理或协作同步。
+- 自动调查需要可用的 Codex CLI 或已配置的模型服务；离线时仍可创建、查看案件和整理可复现报告包。当前也没有数据库、跨 Case 搜索界面、删除管理或协作同步。
 - 黄色和红色实验仍依赖本机已有工具、构建目录和用户逐次授权。当前没有容器隔离；执行前必须认真核对命令、目录和权限提示。
 - 历史练习的自动评分是结构化启发式评分，适合复盘路径质量，但不等于人工专家评审。答案在提交前不会显示在 GUI 或练习副本中；它仍保存在本项目的本地 Pack，属于产品层面的隐藏，不是对能主动绕过规则的用户提供密码学隔离。
 

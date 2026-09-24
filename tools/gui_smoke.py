@@ -174,8 +174,10 @@ def main() -> int:
 
         # 4) 滚轮事件走 MouseWheelRouter（指针位置不需要真实鼠标）
         moved = scroll.canvas.yview()
-        app.event_generate("<MouseWheel>", delta=-240, when="now")
-        app.update()
+        # 真正的桌面鼠标可能停在测试窗口外；固定命中目标以验证路由本身。
+        with mock.patch.object(app, "winfo_containing", return_value=scroll.canvas):
+            app.event_generate("<MouseWheel>", delta=-240, when="now")
+            app.update()
         moved2 = scroll.canvas.yview()
         check("MouseWheelRouter 路由滚轮", moved2 != moved, f"{moved} -> {moved2}")
 
@@ -243,6 +245,14 @@ def main() -> int:
         open_dialogs = [w for w in app.winfo_children() if isinstance(w, tkinter.Toplevel)]
         check("设置对话框打开", len(open_dialogs) >= 1)
         for dialog in open_dialogs:
+            dialog.destroy()
+
+        # 报告包入口在当前 Case 中可用，且草稿可离线打开。
+        app._open_repro_report_dialog()
+        app.update()
+        report_dialogs = [w for w in app.winfo_children() if isinstance(w, tkinter.Toplevel)]
+        check("可复现报告包窗口打开", any("可复现报告包" in w.title() for w in report_dialogs))
+        for dialog in report_dialogs:
             dialog.destroy()
 
         # 12) 备份 / 恢复
