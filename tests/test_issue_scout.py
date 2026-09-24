@@ -99,7 +99,7 @@ class FetchTests(IsolatedHomeTestCase):
 
         urls_requested: list[str] = []
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, context=None):
             urls_requested.append(request.full_url)
             return Response(pages[0] if "page=1" in request.full_url else pages[1])
 
@@ -322,7 +322,7 @@ class TakenDetectionTests(IsolatedHomeTestCase):
                     {"user": {"login": "alice"}, "body": "I'll take this and push a patch soon.", "created_at": "2026-09-01"},
                 ]).encode("utf-8")
 
-        def fake_urlopen(request, timeout=None):
+        def fake_urlopen(request, timeout=None, context=None):
             requested.append(request.full_url)
             return Response()
 
@@ -340,7 +340,7 @@ class TakenDetectionTests(IsolatedHomeTestCase):
         second = record(2, comments=2)
         calls = {"n": 0}
 
-        def failing(request, timeout=None):
+        def failing(request, timeout=None, context=None):
             calls["n"] += 1
             raise urllib.error.URLError("boom")
 

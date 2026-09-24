@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from .llm import LLMError, LLMProviderConfig, chat_completion, resolve_api_key
+from .llm import LLMError, LLMProviderConfig, chat_completion, resolve_api_key, ssl_context
 from .resources import user_root
 
 ProgressCallback = Callable[[str], None]
@@ -189,10 +189,14 @@ def fetch_open_issues(limit: int = 50, progress: ProgressCallback | None = None)
             progress(f"正在抓取 Blender tracker 第 {page} 页……")
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "BugCompass", "Accept": "application/json"})
-            with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:  # noqa: S310 - 固定公开端点
+            with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS, context=ssl_context()) as response:  # noqa: S310 - 固定公开端点
                 payload = json.loads(response.read().decode("utf-8", errors="replace"))
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             reason = getattr(exc, "reason", exc)
+            if "CERTIFICATE_VERIFY_FAILED" in str(reason) or "certificate verify failed" in str(reason):
+                from .llm import _SSL_GUIDANCE
+
+                raise ScoutError(f"无法访问 projects.blender.org：{reason}\n{_SSL_GUIDANCE}") from exc
             raise ScoutError(f"无法访问 projects.blender.org：{reason}\n请检查网络；也可以先查看上次筛选的离线缓存。") from exc
         except json.JSONDecodeError as exc:
             raise ScoutError(f"tracker 返回了无法解析的内容：{str(exc)[:120]}") from exc
@@ -227,7 +231,7 @@ def enrich_with_comments(
         url = f"{COMMENTS_API}/{record.number}/comments?limit={COMMENTS_PAGE_SIZE}&page=1"
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "BugCompass", "Accept": "application/json"})
-            with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:  # noqa: S310
+            with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS, context=ssl_context()) as response:  # noqa: S310
                 payload = json.loads(response.read().decode("utf-8", errors="replace"))
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
             return

@@ -18,6 +18,7 @@ import json
 import re
 import socket
 import time
+import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -208,7 +209,7 @@ def list_models(provider: LLMProviderConfig) -> list[str]:
         headers["Authorization"] = f"Bearer {resolve_api_key(provider)}"
     request = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(request, timeout=min(20.0, provider.timeout_seconds)) as response:  # noqa: S310
+        with urllib.request.urlopen(request, timeout=min(20.0, provider.timeout_seconds), context=ssl_context()) as response:  # noqa: S310
             payload = json.loads(response.read().decode("utf-8", errors="replace"))
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
@@ -216,6 +217,8 @@ def list_models(provider: LLMProviderConfig) -> list[str]:
         raise LLMError(f"获取模型列表失败（HTTP {exc.code}）。") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         reason = getattr(exc, "reason", exc)
+        if _is_ssl_error(exc):
+            raise LLMError(f"无法访问 {provider.base_url}：{reason}\n{_SSL_GUIDANCE}") from exc
         raise LLMError(f"无法访问 {provider.base_url}：{reason}") from exc
     except json.JSONDecodeError as exc:
         raise LLMError(f"服务返回了无法解析的模型列表：{str(exc)[:100]}") from exc
@@ -303,6 +306,37 @@ def _env_get(name: str) -> str | None:
 
 
 # --------------------------------------------------------------------- HTTP 层
+def ssl_context() -> "ssl.SSLContext | None":
+    """HTTPS 证书上下文：优先用 certifi 的 CA 包。
+
+    python.org 安装版 Python 在 macOS 上不带系统证书（HTTPS 全部
+    CERTIFICATE_VERIFY_FAILED，用户实测踩坑）；certifi 是 pip 生态的标准
+    证书包。certifi 不可用时返回 None，回退 OpenSSL 默认路径。
+    """
+    try:
+        import certifi
+    except ImportError:
+        return None
+    try:
+        return ssl.create_default_context(cafile=certifi.where())
+    except (OSError, ssl.SSLError):
+        return None
+
+
+_SSL_GUIDANCE = (
+    "这是 Python 缺少 CA 证书包导致的（python.org 安装版 Python 在 macOS 上常见）。"
+    "修复方法（任选其一）：\n"
+    "1. 终端运行 pip install --upgrade certifi，然后重启 BugCompass；\n"
+    "2. 运行 /Applications/Python 3.14/Install Certificates.command 后重启。"
+)
+
+
+def _is_ssl_error(exc: BaseException) -> bool:
+    reason = getattr(exc, "reason", exc)
+    text = f"{exc} {reason}"
+    return isinstance(reason, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in text or "certificate verify failed" in text
+
+
 def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str], timeout: float) -> dict[str, Any]:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
@@ -311,7 +345,7 @@ def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str], timeo
         headers={"Content-Type": "application/json", "User-Agent": "BugCompass", **headers},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 - 用户配置的端点
+    with urllib.request.urlopen(request, timeout=timeout, context=ssl_context()) as response:  # noqa: S310 - 用户配置的端点
         body = response.read().decode("utf-8", errors="replace")
     try:
         return json.loads(body)
@@ -399,6 +433,10 @@ def chat_completion(
             raise LLMError(f"{provider.label} 返回 HTTP {exc.code}：{message}") from exc
         except urllib.error.URLError as exc:
             reason = getattr(exc, "reason", exc)
+            if _is_ssl_error(exc):
+                raise LLMError(
+                    f"无法与 {provider.label} 建立安全连接（{provider.base_url}）：{reason}\n{_SSL_GUIDANCE}"
+                ) from exc
             raise LLMError(
                 f"无法连接 {provider.label}（{provider.base_url}）：{reason}。"
                 "请检查网络、base_url，或该服务是否支持 OpenAI 兼容接口。"
