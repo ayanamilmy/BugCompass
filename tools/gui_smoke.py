@@ -230,7 +230,6 @@ def main() -> int:
         # 1b) 调查引擎选择器：默认 Codex，大模型服务已加载
         check("调查引擎选择器默认 Codex", app.engine_var.get().startswith("Codex CLI"), app.engine_var.get())
         check("LLM 预设已加载", isinstance(app.llm_providers, list) and len(app.llm_providers) >= 5, f"{len(app.llm_providers)} 个")
-        options = app._engine_options()
         app.settings["active_engine"] = app.llm_providers[0].id
         check("引擎切换为 LLM", app._engine_label() == app.llm_providers[0].label, app._engine_label())
         app.settings["active_engine"] = "codex"
