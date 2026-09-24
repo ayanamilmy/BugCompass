@@ -373,6 +373,17 @@ def main() -> int:
         app.update()
         check("画布缩放生效", abs(mindmap.zoom - z0 * 1.25) < 1e-6, f"{z0} -> {mindmap.zoom}")
 
+        # 9b) 滚轮路由转发（macOS 触控板修复：画布自身绑定拿不到事件时由路由器转发）
+        adapters = getattr(app.wheel_router, "_canvas_adapters", {})
+        check("思维导图已注册滚轮路由", bool(adapters))
+        fresh_mm = app.mindmap  # 界面缩放会重建页面，必须取当前实例
+        current_adapter = adapters.get(str(fresh_mm.canvas))
+        check("当前思维导图已注册滚轮路由", current_adapter is not None)
+        if current_adapter is not None:
+            oy = fresh_mm.offset[1]
+            current_adapter.scroll_pixels(-120)
+            check("滚轮转发平移生效", abs(fresh_mm.offset[1] - oy + 60) < 1e-6, f"{oy} -> {fresh_mm.offset[1]}")
+
         # 10) 指标卡存在且写入 metrics.json
         check("metrics.json 已生成", (view.case_dir / "metrics.json").is_file())
 
