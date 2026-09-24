@@ -23,6 +23,7 @@ from .investigation import (
     write_investigation,
 )
 from .models import Workspace
+from .repro_report import PackageResult, ReportReview, export_package, load_draft, review_draft, save_draft
 from .workspace import BugCompassError, init_workspace, is_git_repository, load_workspace
 
 
@@ -243,6 +244,19 @@ class GuiController:
 
     def set_case_status(self, case_id: str, status: str) -> None:
         update_case_status(self.workspace_path, case_id, status)
+
+    def load_repro_report_draft(self, case_id: str) -> dict[str, Any]:
+        _, paths = show_case(self.workspace_path, case_id)
+        return load_draft(paths["case.json"].parent)
+
+    def save_repro_report_draft(self, case_id: str, draft: dict[str, Any]) -> ReportReview:
+        _, paths = show_case(self.workspace_path, case_id)
+        save_draft(paths["case.json"].parent, draft)
+        return review_draft(draft)
+
+    def export_repro_report_package(self, case_id: str, output_path: str | Path) -> PackageResult:
+        _, paths = show_case(self.workspace_path, case_id)
+        return export_package(paths["case.json"].parent, output_path)
 
     def reject_path(self, case_id: str, hypothesis_id: str) -> CaseView:
         _, paths = show_case(self.workspace_path, case_id)

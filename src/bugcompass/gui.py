@@ -24,6 +24,7 @@ from .metrics import (
 )
 from .mindmap import MindMapCanvas
 from .practice import PracticeCase, PracticeManager, PracticeReveal
+from .repro_report import review_draft
 from .settings import load_settings, save_settings
 from .telemetry import (
     clear_pending as clear_telemetry_pending,
@@ -470,6 +471,7 @@ def run_gui() -> int:
             ttk_module.Label(summary_card, textvariable=self.result_hint_var, style="Status.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
             self.details_button = ttk_module.Button(summary_card, text="查看环境详情", command=self._toggle_details, style="Ghost.TButton")
             self.details_button.grid(row=2, column=0, sticky="w", pady=(8, 0))
+            ttk_module.Button(summary_card, text="整理可复现报告包…", command=self._open_repro_report_dialog, style="Action.TButton").grid(row=2, column=1, sticky="e", pady=(8, 0))
             self.details_frame = ttk_module.Frame(summary_card, style="Card.TFrame")
             self.details_text = tk_module.Text(self.details_frame, height=7, wrap="none", font=self._font("SF Mono", 9), relief="flat", borderwidth=0, background=self.SURFACE_ALT, foreground=self.MUTED, padx=10, pady=10)
             self.details_text.pack(fill="both", expand=True, pady=(6, 0))
@@ -1595,6 +1597,182 @@ def run_gui() -> int:
                 estimated_cost_usd=latest.estimated_cost_usd,
                 status=latest.status,
             )
+
+        # ------------------------------------------------------ 可复现报告包
+        def _open_repro_report_dialog(self) -> None:
+            if self.current_case is None:
+                return
+            if self.current_case.practice_session_id is not None:
+                self.message_box.showinfo("历史练习", "历史练习案例不用于向 Blender 提交新报告。", parent=self)
+                return
+            case_id = self.current_case.case_id
+            try:
+                draft = self.controller.load_repro_report_draft(case_id)
+            except BugCompassError as exc:
+                self.message_box.showerror("报告草稿无法打开", str(exc), parent=self)
+                return
+
+            dialog = tk.Toplevel(self)
+            dialog.title(f"可复现报告包 · {case_id}")
+            dialog.geometry("750x740")
+            dialog.minsize(650, 620)
+            dialog.configure(background=self.BACKGROUND)
+            dialog.transient(self)
+            dialog.grab_set()
+            shell = ttk.Frame(dialog, style="App.TFrame", padding=18)
+            shell.pack(fill="both", expand=True)
+            ttk.Label(shell, text="可复现报告包", style="Title.TLabel", font=self._font("SF Pro Display", 21, "bold")).pack(anchor="w")
+            ttk.Label(shell, text="请核对预填信息。报告草稿保存在 Case 中；只有手动选择的附件会进入 ZIP。", style="PageSubtitle.TLabel", wraplength=680).pack(anchor="w", pady=(3, 12))
+
+            notebook = ttk.Notebook(shell)
+            notebook.pack(fill="both", expand=True)
+            content = ttk.Frame(notebook, style="Surface.TFrame", padding=14)
+            review_page = ttk.Frame(notebook, style="Surface.TFrame", padding=14)
+            notebook.add(content, text="报告内容")
+            notebook.add(review_page, text="附件与检查")
+            content.columnconfigure(0, weight=1)
+
+            entries: dict[str, Any] = {}
+            text_boxes: dict[str, Any] = {}
+            for row, (field, label) in enumerate((
+                ("title", "简明标题"),
+                ("broken_version", "出现问题的 Blender 版本"),
+                ("working_version", "最后正常版本（未知可留空）"),
+                ("system_info", "系统、显卡和驱动摘要（或在附件中加入 system-info.txt）"),
+            )):
+                ttk.Label(content, text=label, style="Heading.TLabel", font=self._font("SF Pro Text", 10, "bold")).grid(row=row * 2, column=0, sticky="w", pady=(6, 2))
+                variable = tk.StringVar(value=draft[field])
+                ttk.Entry(content, textvariable=variable, style="Dark.TEntry").grid(row=row * 2 + 1, column=0, sticky="ew")
+                entries[field] = variable
+            for index, (field, label, height) in enumerate((
+                ("steps", "逐步复现操作", 5),
+                ("expected", "预期行为", 3),
+                ("actual", "实际行为", 3),
+            ), start=4):
+                ttk.Label(content, text=label, style="Heading.TLabel", font=self._font("SF Pro Text", 10, "bold")).grid(row=index * 2, column=0, sticky="w", pady=(7, 2))
+                editor = tk.Text(content, height=height, wrap="word", background=self.SURFACE_ALT, foreground=self.TEXT, insertbackground=self.TEXT, relief="flat", padx=8, pady=6)
+                editor.insert("1.0", draft[field])
+                editor.grid(row=index * 2 + 1, column=0, sticky="nsew")
+                text_boxes[field] = editor
+            content.rowconfigure(9, weight=1)
+
+            flags: dict[str, Any] = {}
+            for field, label in (
+                ("reproduced", "已按上述步骤在出错版本再次复现"),
+                ("factory_startup", "无需 .blend，可从默认场景复现"),
+                ("tested_latest", "已在最新稳定版或开发版复测"),
+                ("duplicate_checked", "已搜索开放与已关闭报告，检查重复"),
+                ("simplified_file", "所选 .blend 已删除无关内容"),
+                ("crash", "这是崩溃问题"),
+            ):
+                variable = tk.BooleanVar(value=draft[field])
+                tk.Checkbutton(review_page, text=label, variable=variable, background=self.SURFACE, foreground=self.TEXT, activebackground=self.SURFACE, activeforeground=self.TEXT, selectcolor=self.SURFACE_ALT, anchor="w").pack(anchor="w")
+                flags[field] = variable
+
+            steps_editor = text_boxes["steps"]
+            steps_editor.edit_modified(False)
+
+            def invalidate_reproduction(_event: Any) -> None:
+                if steps_editor.edit_modified():
+                    flags["reproduced"].set(False)
+                    steps_editor.edit_modified(False)
+
+            steps_editor.bind("<<Modified>>", invalidate_reproduction)
+
+            ttk.Label(review_page, text="公开附件（不会自动加入原始报告、源码或 Case 文件）", style="Heading.TLabel", font=self._font("SF Pro Text", 11, "bold")).pack(anchor="w", pady=(12, 5))
+            attachment_paths = list(draft["attachments"])
+            attachments = tk.Listbox(review_page, height=6, background=self.SURFACE_ALT, foreground=self.TEXT, selectbackground=self.BORDER, borderwidth=0)
+            attachments.pack(fill="x")
+
+            def refresh_attachments() -> None:
+                attachments.delete(0, "end")
+                for path in attachment_paths:
+                    attachments.insert("end", path)
+
+            refresh_attachments()
+
+            def add_attachments() -> None:
+                selected = self.file_dialog.askopenfilenames(title="选择准备公开的 .blend、system-info.txt、截图或日志", parent=dialog)
+                for path in selected:
+                    if path not in attachment_paths:
+                        attachment_paths.append(path)
+                refresh_attachments()
+
+            def remove_attachment() -> None:
+                for index in reversed(attachments.curselection()):
+                    attachment_paths.pop(index)
+                refresh_attachments()
+
+            attachment_actions = ttk.Frame(review_page, style="Surface.TFrame")
+            attachment_actions.pack(anchor="w", pady=(6, 10))
+            ttk.Button(attachment_actions, text="添加附件…", command=add_attachments, style="Action.TButton").pack(side="left")
+            ttk.Button(attachment_actions, text="移除所选", command=remove_attachment, style="Ghost.TButton").pack(side="left", padx=(8, 0))
+            review_var = tk.StringVar()
+            ttk.Label(review_page, textvariable=review_var, style="Muted.TLabel", wraplength=650, justify="left").pack(anchor="w")
+
+            def current_draft() -> dict[str, Any]:
+                data = dict(draft)
+                data.update({name: variable.get() for name, variable in entries.items()})
+                data.update({name: editor.get("1.0", "end-1c") for name, editor in text_boxes.items()})
+                data.update({name: bool(variable.get()) for name, variable in flags.items()})
+                data["attachments"] = list(attachment_paths)
+                return data
+
+            def show_review() -> None:
+                result = review_draft(current_draft())
+                if result.missing_required:
+                    review_var.set("尚缺材料：" + "、".join(result.missing_required) + "。\n可导出草稿，但提交前请补齐。")
+                else:
+                    review_var.set("必填材料已填写。请继续人工核对版本、复现、附件内容和报告真实性。")
+
+            def save() -> bool:
+                try:
+                    self.controller.save_repro_report_draft(case_id, current_draft())
+                except BugCompassError as exc:
+                    self.message_box.showerror("保存失败", str(exc), parent=dialog)
+                    return False
+                show_review()
+                self.result_hint_var.set("可复现报告草稿已保存到当前 Case。")
+                return True
+
+            def export() -> None:
+                if not save():
+                    return
+                target = self.file_dialog.asksaveasfilename(
+                    title="保存可复现报告包",
+                    defaultextension=".zip",
+                    initialfile=f"{case_id}-可复现报告包.zip",
+                    filetypes=[("ZIP 压缩包", "*.zip")],
+                    parent=dialog,
+                )
+                if not target:
+                    return
+                warning = "\n".join(f"- {path}" for path in attachment_paths) or "（没有附件）"
+                if not self.message_box.askyesno(
+                    "核对公开内容",
+                    "报告正文和以下附件将写入本地 ZIP：\n" + warning +
+                    "\n\n请确认附件不含私人或项目敏感内容；程序不会自动脱敏或上传。继续导出？",
+                    parent=dialog,
+                ):
+                    return
+                try:
+                    result = self.controller.export_repro_report_package(case_id, target)
+                except BugCompassError as exc:
+                    self.message_box.showerror("导出失败", str(exc), parent=dialog)
+                    return
+                self.message_box.showinfo(
+                    "报告包已导出",
+                    f"已保存到：\n{result.path}\n\n请先阅读 ZIP 内的发布前检查清单，再提交报告与所需附件。",
+                    parent=dialog,
+                )
+                self.result_hint_var.set("可复现报告包已导出；提交前请核对检查清单。")
+
+            show_review()
+            actions = ttk.Frame(shell, style="App.TFrame")
+            actions.pack(fill="x", pady=(12, 0))
+            ttk.Button(actions, text="关闭", command=dialog.destroy, style="Ghost.TButton").pack(side="right")
+            ttk.Button(actions, text="导出 ZIP…", command=export, style="Primary.TButton").pack(side="right", padx=(0, 8))
+            ttk.Button(actions, text="保存草稿", command=save, style="Action.TButton").pack(side="right", padx=(0, 8))
 
         # -------------------------------------------------------------- 备份
         def _backup_workspace(self) -> None:

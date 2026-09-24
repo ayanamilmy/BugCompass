@@ -177,6 +177,22 @@ class GuiControllerTests(unittest.TestCase):
         metadata = json.loads((view.case_dir / "case.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata["status"], "investigating")
 
+    def test_repro_report_draft_and_package_for_current_case(self) -> None:
+        view = self.controller.create_investigation(self.repo, "# 视图消失\n")
+        draft = self.controller.load_repro_report_draft(view.case_id)
+        self.assertEqual(draft["title"], "视图消失")
+        draft.update({
+            "broken_version": "4.5.1", "steps": "1. 打开默认场景\n2. 切换模式",
+            "expected": "显示物体", "actual": "物体消失", "system_info": "测试系统",
+            "reproduced": True, "factory_startup": True,
+        })
+        review = self.controller.save_repro_report_draft(view.case_id, draft)
+        self.assertTrue(review.ready_for_review)
+        output = self.root / "share.zip"
+        result = self.controller.export_repro_report_package(view.case_id, output)
+        self.assertEqual(result.path, output.resolve())
+        self.assertTrue(output.is_file())
+
     @staticmethod
     def _hypothesis(hypothesis_id: str) -> dict[str, object]:
         return {
