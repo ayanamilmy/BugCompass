@@ -17,10 +17,22 @@
 修改完成前至少运行：
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+python3 -m pytest -q
 PYTHONPATH=src python3 -m bugcompass --help
 PYTHONPATH=src python3 -m bugcompass gui --check
 python3 /Users/ayanami/.codex/skills/.system/skill-creator/scripts/quick_validate.py .agents/skills/blender-bug-investigator
 ```
 
 涉及 CLI 工作流时，还要在临时 Git 仓库上依次验证 `init`、`doctor`、`case create` 和 `case show`。
+涉及 GUI 改动时，再运行 `python3 tools/gui_smoke.py`（macOS/Linux 可直接跑）。
+
+## 多端协作同步协议
+
+本仓库由所有者、Codex CLI、Claude Code（VS Code）与 Arena 沙箱助手共同开发。
+完整规则见 `docs/COLLABORATION.md`，要点：
+
+1. **main 只读**：任何任务先 `tools/task.sh start codex/任务名` 从最新 main 开分支。
+2. **开工先同步**、**完工必过测试**：用 `tools/task.sh finish "提交说明"`（测试不绿会拒绝推送）。
+3. **只做派给你的那件事**，任务描述没提的不碰。
+4. 推送分支后 `tools/task.sh pr "标题"` 建 PR；**PR 由所有者合并**，不要合并自己或别人的 PR。
+5. 除用户明确发起的 `codex exec` 调查外，不要访问网络或调用独立 AI API。
