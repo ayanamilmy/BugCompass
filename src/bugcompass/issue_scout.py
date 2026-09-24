@@ -20,7 +20,7 @@ import json
 import re
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -56,6 +56,15 @@ FALLBACK_MODULES: tuple[str, ...] = (
 
 TYPE_LABELS: tuple[str, ...] = ("Type/Bug", "Type/Report", "Type/Known Issue", "Type/To Do")
 EXCLUDED_STATUS: tuple[str, ...] = ("Status/Archived", "Status/Duplicate", "Status/Resolved")
+GOOD_FIRST_LABEL = "Meta/Good First Issue"
+#: 评论里出现指向本仓库 PR 的链接 → 几乎可以断定已有人在做。
+#: 兼容完整 URL（projects.blender.org/blender/blender/-/pulls/N）与裸引用（blender/blender/pulls/N）。
+PR_LINK_PATTERN = re.compile(r"blender/blender/(?:-/)?pulls?/\d+", re.IGNORECASE)
+COMMENTS_API = "https://projects.blender.org/api/v1/repos/blender/blender/issues"
+COMMENTS_PAGE_SIZE = 50
+COMMENTS_KEEP_PER_ISSUE = 20
+COMMENT_BODY_CHARS = 600
+ENRICH_MAX_WORKERS = 6
 BODY_PREVIEW_CHARS = 3500
 SCORING_BATCH_SIZE = 10
 
@@ -73,6 +82,13 @@ class IssueRecord:
     labels: list[str]
     created_at: str
     comments: int
+    assignees: list[str] = field(default_factory=list)
+    #: 最近评论（作者/正文片段/时间），由 enrich_with_comments 抓取，用于判断是否已有人接手。
+    comments_data: list[dict[str, str]] = field(default_factory=list)
+
+    @property
+    def good_first(self) -> bool:
+        return GOOD_FIRST_LABEL in self.labels
 
     @property
     def module_labels(self) -> list[str]:
@@ -93,6 +109,11 @@ class IssueRecord:
         if number <= 0:
             return None
         labels = [str(label.get("name")) for label in raw.get("labels") or [] if isinstance(label, dict) and label.get("name")]
+        assignees = [
+            str(person.get("login"))
+            for person in raw.get("assignees") or []
+            if isinstance(person, dict) and person.get("login")
+        ]
         return cls(
             number=number,
             title=str(raw.get("title") or f"Issue #{number}"),
@@ -101,6 +122,7 @@ class IssueRecord:
             labels=labels,
             created_at=str(raw.get("created_at") or ""),
             comments=int(raw.get("comments") or 0),
+            assignees=assignees,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -112,6 +134,8 @@ class IssueRecord:
             "labels": self.labels,
             "created_at": self.created_at,
             "comments": self.comments,
+            "assignees": self.assignees,
+            "comments_data": self.comments_data,
         }
 
     @classmethod
@@ -124,6 +148,12 @@ class IssueRecord:
             labels=[str(item) for item in data.get("labels", [])],
             created_at=str(data.get("created_at", "")),
             comments=int(data.get("comments", 0)),
+            assignees=[str(item) for item in data.get("assignees", [])],
+            comments_data=[
+                {str(k): str(v) for k, v in item.items()}
+                for item in data.get("comments_data", [])
+                if isinstance(item, dict)
+            ],
         )
 
 
@@ -133,9 +163,18 @@ class IssueScore:
     score: int | None  # 1-10；None = 该条未评分（批次失败等）
     difficulty: str  # 入门 / 进阶 / 挑战 / 未知
     reason: str
+    taken: bool = False  # 是否已有人接手（指派/PR 链接/AI 判断）
+    taken_evidence: str = ""  # 判断依据（供用户核对）
 
     def to_dict(self) -> dict[str, Any]:
-        return {"number": self.number, "score": self.score, "difficulty": self.difficulty, "reason": self.reason}
+        return {
+            "number": self.number,
+            "score": self.score,
+            "difficulty": self.difficulty,
+            "reason": self.reason,
+            "taken": self.taken,
+            "taken_evidence": self.taken_evidence,
+        }
 
 
 # ---------------------------------------------------------------------- 抓取
@@ -167,18 +206,74 @@ def fetch_open_issues(limit: int = 50, progress: ProgressCallback | None = None)
     return records[:limit]
 
 
+def enrich_with_comments(
+    records: list[IssueRecord],
+    progress: ProgressCallback | None = None,
+) -> list[IssueRecord]:
+    """抓取有评论的 issue 的评论区（并行、限流），用于判断是否已有人接手。
+
+    issue 列表接口自带 ``comments`` 计数——计数为 0 的直接跳过，不浪费请求。
+    单个 issue 抓取失败只影响它自己的判断，不影响整批。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    targets = [record for record in records if record.comments > 0]
+    if not targets:
+        return records
+    if progress:
+        progress(f"正在抓取 {len(targets)} 个 issue 的评论区（判断是否已有人接手）……")
+
+    def fetch_one(record: IssueRecord) -> None:
+        url = f"{COMMENTS_API}/{record.number}/comments?limit={COMMENTS_PAGE_SIZE}&page=1"
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "BugCompass", "Accept": "application/json"})
+            with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:  # noqa: S310
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            return
+        if not isinstance(payload, list):
+            return
+        record.comments_data = [
+            {
+                "author": str((item.get("user") or {}).get("login", "")),
+                "body": str(item.get("body") or "")[:COMMENT_BODY_CHARS],
+                "created_at": str(item.get("created_at") or ""),
+            }
+            for item in payload
+            if isinstance(item, dict)
+        ][:COMMENTS_KEEP_PER_ISSUE]
+
+    with ThreadPoolExecutor(max_workers=ENRICH_MAX_WORKERS) as pool:
+        list(pool.map(fetch_one, targets))
+    return records
+
+
+def deterministic_taken(record: IssueRecord) -> tuple[bool, str]:
+    """不需要 AI 的占用判断：已指派 / 评论里出现 PR 链接。"""
+    if record.assignees:
+        return True, f"已指派给 {', '.join(record.assignees)}"
+    for comment in record.comments_data:
+        if PR_LINK_PATTERN.search(comment.get("body", "")):
+            author = comment.get("author") or "有人"
+            return True, f"评论中出现 PR 链接（{author}）"
+    return False, ""
+
+
 def filter_issues(
     records: list[IssueRecord],
     *,
     modules: list[str] | None = None,
     types: list[str] | None = None,
+    good_first_only: bool = False,
 ) -> list[IssueRecord]:
-    """本地过滤：模块（任一命中）、类型（任一命中）、剔除已归档/重复/已解决。"""
+    """本地过滤：模块（任一命中）、类型（任一命中）、Good First Issue、剔除已归档/重复/已解决。"""
     wanted_modules = {m for m in (modules or []) if m}
     wanted_types = {t for t in (types or []) if t}
     result: list[IssueRecord] = []
     for record in records:
         if any(label in EXCLUDED_STATUS for label in record.labels):
+            continue
+        if good_first_only and not record.good_first:
             continue
         if wanted_modules and not (set(record.module_labels) & wanted_modules):
             continue
@@ -194,9 +289,15 @@ SCORING_SYSTEM = (
     "对给出的每个 issue，按「调查价值」打 1-10 分：\n"
     "- 高分：复现步骤清晰、影响明确、根因大概率能在源码里定位、适合用工具链调查；\n"
     "- 低分：信息残缺、依赖外部文件/硬件、纯设计讨论、或需要 deep 系统知识才能动手。\n"
-    "同时判断难度（入门/进阶/挑战）并用不超过 40 字的中文说明理由。\n"
+    "同时判断难度（入门/进阶/挑战）并用不超过 40 字的中文说明理由。\n\n"
+    "还要判断该 issue 是否已有人接手（taken）：\n"
+    "- true 的情形：评论里出现修复 PR/补丁链接、有人认领（I'll fix / working on a patch / "
+    "I'll take this 等）、维护者明确说在处理、或讨论显示已有代码在评审；\n"
+    "- false 的情形：只有复现确认（I can reproduce）、提问、需求讨论、或与修复无关的闲聊；\n"
+    "- 不确定时给 false。taken_evidence 用不超过 30 字引用或概括证据。\n"
     "只输出 JSON，格式：{\"results\": [{\"number\": 编号, \"score\": 分数, "
-    "\"difficulty\": \"入门|进阶|挑战\", \"reason\": \"理由\"}]}，不要 Markdown 围栏。"
+    "\"difficulty\": \"入门|进阶|挑战\", \"reason\": \"理由\", "
+    "\"taken\": true|false, \"taken_evidence\": \"证据\"}]}，不要 Markdown 围栏。"
 )
 
 
@@ -216,7 +317,18 @@ def build_scoring_messages(batch: list[IssueRecord]) -> list[dict[str, str]]:
     for record in batch:
         labels = ", ".join(record.labels) or "无标签"
         body = re.sub(r"\s+", " ", record.body or "")[:1200]
-        lines.append(f"#{record.number}｜{record.title}\n标签：{labels}\n正文：{body or '（无正文）'}")
+        assignees = ", ".join(record.assignees) if record.assignees else "无"
+        comments = ""
+        if record.comments_data:
+            excerpts = []
+            for comment in reversed(record.comments_data[-8:]):  # 最新在后，取末尾 8 条
+                author = comment.get("author") or "?"
+                text = re.sub(r"\s+", " ", comment.get("body", ""))[:200]
+                excerpts.append(f"{author}: {text}")
+            comments = "\n评论（最新在最后）：\n" + "\n".join(excerpts)
+        lines.append(
+            f"#{record.number}｜{record.title}\n标签：{labels}\n指派：{assignees}\n正文：{body or '（无正文）'}{comments}"
+        )
     return [
         {"role": "system", "content": SCORING_SYSTEM + custom},
         {"role": "user", "content": "请评估以下 issue：\n\n" + "\n\n".join(lines)},
@@ -264,7 +376,19 @@ def score_issues(
                 difficulty = str(raw.get("difficulty") or "未知")
                 if difficulty not in {"入门", "进阶", "挑战"}:
                     difficulty = "未知"
-                scores[number] = IssueScore(number=number, score=score_value, difficulty=difficulty, reason=str(raw.get("reason") or "")[:120])
+                taken_raw = raw.get("taken")
+                ai_taken = taken_raw is True  # 只有显式 true 才算
+                ai_evidence = str(raw.get("taken_evidence") or "")[:60]
+                record = next((item for item in batch if item.number == number), None)
+                det_taken, det_evidence = (deterministic_taken(record) if record else (False, ""))
+                scores[number] = IssueScore(
+                    number=number,
+                    score=score_value,
+                    difficulty=difficulty,
+                    reason=str(raw.get("reason") or "")[:120],
+                    taken=ai_taken or det_taken,
+                    taken_evidence=ai_evidence or det_evidence,
+                )
         except (LLMError, ValueError, KeyError, json.JSONDecodeError) as exc:
             for record in batch:
                 scores[record.number] = IssueScore(number=record.number, score=None, difficulty="未知", reason=f"本批评分失败：{str(exc)[:80]}")
@@ -331,6 +455,8 @@ def scan_scores_from_cache(cache: dict[str, Any]) -> dict[int, IssueScore]:
             score=int(score_value) if isinstance(score_value, (int, float)) else None,
             difficulty=str(raw.get("difficulty") or "未知"),
             reason=str(raw.get("reason") or ""),
+            taken=bool(raw.get("taken", False)),
+            taken_evidence=str(raw.get("taken_evidence") or ""),
         )
     return scores
 
@@ -341,6 +467,8 @@ def issue_to_bug_text(record: IssueRecord, score: IssueScore | None = None) -> s
     score_line = ""
     if score is not None:
         score_line = f"\n> AI 筛选评分：{score.score if score.score is not None else '未评分'}/10 · {score.difficulty} · {score.reason}\n"
+        if score.taken:
+            score_line += f">\n> ⚠️ 筛选时发现可能已有人接手（{score.taken_evidence or '证据见 tracker'}）。动手前先到上面的链接确认最新状态，避免重复劳动。\n"
     return (
         f"# {record.title}\n"
         f"\n来源：{record.url}（Blender tracker #{record.number}，创建于 {record.created_at[:10]}）\n"
@@ -358,8 +486,12 @@ def export_markdown(records: list[IssueRecord], scores: dict[int, IssueScore], d
         score = scores.get(record.number)
         value = f"{score.score}/10" if score and score.score is not None else "未评分"
         reason = score.reason if score else ""
-        lines.append(f"{rank}. **{value}** · {score.difficulty if score else '未知'} · [#{record.number} {record.title}]({record.url})")
+        taken_mark = " · **已有人接手**" if score and score.taken else ""
+        gfi_mark = " · ★ Good First Issue" if record.good_first else ""
+        lines.append(f"{rank}. **{value}** · {score.difficulty if score else '未知'} · [#{record.number} {record.title}]({record.url}){gfi_mark}{taken_mark}")
         if reason:
             lines.append(f"   - {reason}")
+        if score and score.taken and score.taken_evidence:
+            lines.append(f"   - 占用证据：{score.taken_evidence}")
     dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return dest

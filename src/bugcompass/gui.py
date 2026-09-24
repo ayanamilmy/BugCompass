@@ -14,7 +14,7 @@ from .codex_runner import CodexRunBusyError, CodexRunResult, CodexRunner
 from .diagnostics import export_bundle, install_crash_handler, install_tk_handler
 from .dpi import apply_scaling, enable_windows_dpi_awareness, scale_percent
 from .gui_controller import CaseView, GuiController
-from .issue_scout import IssueRecord, IssueScore, ScoutError, export_markdown as export_scan_markdown, fetch_open_issues, filter_issues, issue_to_bug_text, load_last_scan, save_scan, scan_records_from_cache, scan_scores_from_cache
+from .issue_scout import IssueRecord, IssueScore, ScoutError, deterministic_taken, enrich_with_comments, export_markdown as export_scan_markdown, fetch_open_issues, filter_issues, issue_to_bug_text, load_last_scan, save_scan, scan_records_from_cache, scan_scores_from_cache
 from .key_store import delete_key, get_key, save_key, storage_hint
 from .llm import LLMError, LLMProviderConfig, load_providers, resolve_api_key, test_connection
 from .llm_runner import LLMInvestigator
@@ -1932,6 +1932,21 @@ def run_gui() -> int:
             count_spin.delete(0, "end")
             count_spin.insert(0, "40")
             count_spin.pack(side="left")
+            self._scout_gfi_var = tk.BooleanVar(value=False)
+            tk.Checkbutton(
+                row2, text="只看 Good First Issue", variable=self._scout_gfi_var,
+                background=self.SURFACE, foreground=self.ORANGE, activebackground=self.SURFACE,
+                activeforeground=self.ORANGE, selectcolor=self.SURFACE_ALT, highlightthickness=0, bd=0,
+                font=("SF Pro Text", 10, "bold"),
+            ).pack(side="left", padx=(16, 0))
+            self._scout_hide_taken_var = tk.BooleanVar(value=True)
+            hide_taken_button = tk.Checkbutton(
+                row2, text="只显示没人占用的", variable=self._scout_hide_taken_var,
+                background=self.SURFACE, foreground=self.TEXT, activebackground=self.SURFACE,
+                activeforeground=self.TEXT, selectcolor=self.SURFACE_ALT, highlightthickness=0, bd=0,
+                font=("SF Pro Text", 10),
+            )
+            hide_taken_button.pack(side="left", padx=(10, 0))
             ttk.Label(row2, text="评分引擎", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(16, 6))
             self._scout_engine_var = tk.StringVar()
             engine_names = []
@@ -1957,12 +1972,12 @@ def run_gui() -> int:
             # ---- 结果区
             result_card = ttk.LabelFrame(shell, text="筛选结果（按 AI 评分排序）", style="Dark.TLabelframe", padding=10)
             result_card.pack(fill="both", expand=True)
-            columns = ("score", "number", "title", "difficulty", "module", "comments")
+            columns = ("score", "number", "title", "difficulty", "taken", "module", "comments")
             self._scout_tree = ttk.Treeview(result_card, columns=columns, show="headings", style="Scout.Treeview", selectmode="browse")
             for cid, text, width, anchor in (
-                ("score", "评分", 60, "center"), ("number", "#", 70, "w"),
-                ("title", "标题", 460, "w"), ("difficulty", "难度", 70, "center"),
-                ("module", "模块", 170, "w"), ("comments", "评论", 50, "center"),
+                ("score", "评分", 55, "center"), ("number", "#", 65, "w"),
+                ("title", "标题", 420, "w"), ("difficulty", "难度", 65, "center"),
+                ("taken", "占用", 75, "center"), ("module", "模块", 150, "w"), ("comments", "评论", 45, "center"),
             ):
                 self._scout_tree.heading(cid, text=text)
                 self._scout_tree.column(cid, width=width, anchor=anchor, stretch=(cid == "title"))
@@ -1988,6 +2003,7 @@ def run_gui() -> int:
             self._scout_records: list[IssueRecord] = []
             self._scout_scores: dict[int, IssueScore] = {}
             self._scout_tree.bind("<<TreeviewSelect>>", self._scout_on_select)
+            hide_taken_button.configure(command=self._scout_repopulate)
 
             # 离线缓存：打开即可看上次结果
             cache = load_last_scan()
@@ -2022,6 +2038,7 @@ def run_gui() -> int:
                 return
             modules = [name for name, var in module_vars.items() if var.get()]
             types = [] if type_var.get() == "全部" else [type_var.get()]
+            good_first_only = bool(self._scout_gfi_var.get())
             try:
                 limit = max(10, min(100, int(count_spin.get())))
             except (TypeError, ValueError):
@@ -2043,11 +2060,19 @@ def run_gui() -> int:
                     from .issue_scout import score_issues
 
                     records = fetch_open_issues(limit=limit, progress=lambda text: apply_ui(lambda: self._scout_status_var.set(text)))
-                    records = filter_issues(records, modules=modules, types=types)
+                    records = filter_issues(records, modules=modules, types=types, good_first_only=good_first_only)
                     if not records:
                         apply_ui(lambda: (self._scout_status_var.set("没有符合条件的 issue，试着放宽模块或类型。"), self._scout_start_button.configure(state="normal")))
                         return
+                    enrich_with_comments(records, progress=lambda text: apply_ui(lambda: self._scout_status_var.set(text)))
                     scores = score_issues(provider, records, progress=lambda text: apply_ui(lambda: self._scout_status_var.set(text)))
+                    # 评论区抓取晚于过滤：给确定性判断补一次机会（抓到 PR 链接/指派）。
+                    for record in records:
+                        score = scores.get(record.number)
+                        det_taken, det_evidence = deterministic_taken(record)
+                        if det_taken and score is not None and not score.taken:
+                            score.taken = True
+                            score.taken_evidence = det_evidence
 
                     def done() -> None:
                         self._scout_records = records
@@ -2055,7 +2080,11 @@ def run_gui() -> int:
                         self._scout_populate(records, scores)
                         save_scan(records, scores, {"modules": modules, "types": types, "limit": limit, "engine": provider.id})
                         ranked = sum(1 for s in scores.values() if s.score is not None)
-                        self._scout_status_var.set(f"筛选完成：{len(records)} 个 issue，其中 {ranked} 个已评分（已缓存，断网可看）。")
+                        taken_count = sum(1 for s in scores.values() if s.taken)
+                        self._scout_status_var.set(
+                            f"筛选完成：{len(records)} 个 issue，{ranked} 个已评分，"
+                            f"{taken_count} 个疑似已有人接手（已默认隐藏，可取消勾选查看）。（已缓存，断网可看）"
+                        )
                         self._scout_start_button.configure(state="normal")
 
                     apply_ui(done)
@@ -2071,15 +2100,24 @@ def run_gui() -> int:
         def _scout_populate(self, records: list[IssueRecord], scores: dict[int, IssueScore]) -> None:
             tree = self._scout_tree
             tree.delete(*tree.get_children())
+            hide_taken = bool(getattr(self, "_scout_hide_taken_var", None) and self._scout_hide_taken_var.get())
             ranked = sorted(records, key=lambda r: (scores.get(r.number).score is None if r.number in scores else True, -(scores[r.number].score or 0) if r.number in scores else 0))
             for record in ranked:
                 score = scores.get(record.number)
+                if hide_taken and score is not None and score.taken:
+                    continue
                 value = f"{score.score}" if score and score.score is not None else "—"
                 module = record.module_labels[0].removeprefix("Module/") if record.module_labels else "其他"
+                title = ("★ " + record.title) if record.good_first else record.title
+                taken_text = "已占用" if (score and score.taken) else "空闲"
                 tree.insert("", "end", iid=str(record.number), values=(
-                    value, f"#{record.number}", record.title[:80],
-                    score.difficulty if score else "未知", module, record.comments,
+                    value, f"#{record.number}", title[:80],
+                    score.difficulty if score else "未知", taken_text, module, record.comments,
                 ))
+
+        def _scout_repopulate(self) -> None:
+            if self._scout_records:
+                self._scout_populate(self._scout_records, self._scout_scores)
 
         def _scout_selected_record(self) -> IssueRecord | None:
             selection = self._scout_tree.selection()
@@ -2097,6 +2135,8 @@ def run_gui() -> int:
             if score:
                 lines.append(f"AI 评分：{score.score if score.score is not None else '未评分'}/10 · {score.difficulty}")
                 lines.append(f"理由：{score.reason}")
+                if score.taken:
+                    lines.append(f"⚠️ 疑似已有人接手：{score.taken_evidence or '证据见 tracker'}")
                 lines.append("")
             lines.append(f"标签：{', '.join(record.labels) or '无'}")
             lines.append(f"创建：{record.created_at[:10]} · 评论 {record.comments}")
@@ -2112,7 +2152,15 @@ def run_gui() -> int:
             if record is None:
                 self.message_box.showinfo("选择 Issue", "先在列表里选中一个 issue。", parent=self._scout_dialog)
                 return
-            text = issue_to_bug_text(record, self._scout_scores.get(record.number))
+            score = self._scout_scores.get(record.number)
+            if score is not None and score.taken:
+                if not self.message_box.askyesno(
+                    "可能已有人接手",
+                    f"#{record.number} 疑似已有人在做：\n{score.taken_evidence or '评论中出现 PR/认领迹象'}\n\n仍然要为它创建调查案件吗？（练习调查本身没问题，别提交重复修复即可）",
+                    parent=self._scout_dialog,
+                ):
+                    return
+            text = issue_to_bug_text(record, score)
             workspace_repo = None
             try:
                 from .workspace import load_workspace
