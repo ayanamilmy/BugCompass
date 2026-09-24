@@ -15,6 +15,8 @@ SETTINGS_SCHEMA_VERSION = 1
 DEFAULTS: dict[str, Any] = {
     "schema_version": SETTINGS_SCHEMA_VERSION,
     "ui_scale_percent": 100,
+    # 调查引擎：codex（默认，行为不变）或某个大模型服务 id（见 llm.py）。
+    "active_engine": "codex",
     # 统计上报默认关闭；只有用户主动打开才会写本地 outbox。
     "telemetry_enabled": False,
     "telemetry_endpoint": "",

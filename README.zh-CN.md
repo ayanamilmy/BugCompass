@@ -1,4 +1,4 @@
-# BugCompass 0.2
+# BugCompass 0.3
 
 BugCompass 是一个中文优先的本地工具，用来把 Blender Bug 描述整理成可持续调查的案件，并让 Codex 基于本地源码与 Git 证据给出可验证的调查路径。推荐使用图形界面；CLI 保留给高级使用和排错。
 
@@ -25,6 +25,30 @@ BugCompass 是一个中文优先的本地工具，用来把 Blender Bug 描述�
   `packs/blender/practice/PROVENANCE.md`）。
 - 打包版资源定位修复：安装包内 `packs/`、`.agents/` 可被正确找到（源码版的
   `parents[2]` 在 frozen 后无效）。
+
+## 0.3 版本变更：调查引擎可接入大模型 API
+
+除了 Codex CLI，现在可以用**任意 OpenAI 兼容端点**驱动调查：DeepSeek、通义千问、Kimi、
+智谱 GLM、OpenAI、Ollama（本地，无需密钥），或自定义端点。核心设计：
+
+- **密钥只从环境变量读取**（如 `DEEPSEEK_API_KEY`），`providers.json` 只保存端点、
+  模型名和环境变量名——密钥永不写入任何文件、备份或诊断包（有测试强制这一条）。
+- 模型通过 4 个**只读工具**查阅源码（列目录 / 读文件 / 正则搜索 / 读案件记录），
+  全部限制在 Blender 仓库与案件目录白名单内，无 shell、无写操作；轮次与总时长有硬预算。
+- 与 Codex 共用同一套结果管线：结构化结果写 `investigation.json`，运行摘要写
+  `llm-last-run.json`，指标卡、统计上报、继续调查、练习模式的规则全部一致。
+- **默认引擎仍是 Codex CLI**——不配置 API 时，应用行为与从前完全一致。
+
+使用方法：
+
+```bash
+bugcompass llm init-config   # 生成 ~/.bugcompass/providers.json 模板（含预设）
+bugcompass llm list          # 查看可用服务与密钥环境变量名
+export DEEPSEEK_API_KEY=你的密钥
+bugcompass llm test --provider deepseek   # 测试连接（只发一次最小请求）
+```
+
+然后在 GUI「新建调查」页选择调查引擎，或设置里点「设为当前引擎」。
 
 ## 推荐：图形界面
 
@@ -130,6 +154,11 @@ python -m bugcompass restore --archive <备份.zip> --dest <目标文件夹>
 python -m bugcompass migrate --workspace ./workspaces/blender-local
 python -m bugcompass diagnostics --dest ./diag --workspace ./workspaces/blender-local --case demo-001
 python -m bugcompass telemetry --status
+
+# 0.3 新增：大模型 API 引擎
+python -m bugcompass llm init-config
+python -m bugcompass llm list
+python -m bugcompass llm test --provider deepseek
 ```
 
 然后在打开本仓库的 Codex 中输入：

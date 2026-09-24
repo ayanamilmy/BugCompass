@@ -96,6 +96,16 @@ def build_parser() -> argparse.ArgumentParser:
     telemetry.add_argument("--export", metavar="目录", help="把待发事件导出成 JSON 供检查")
     telemetry.add_argument("--clear", action="store_true", help="清空本地待发事件")
     telemetry.set_defaults(handler=_handle_telemetry)
+
+    llm = commands.add_parser("llm", help="大模型 API 服务管理（OpenAI 兼容端点）")
+    llm_commands = llm.add_subparsers(dest="llm_command", required=True)
+    llm_list = llm_commands.add_parser("list", help="列出可用的大模型服务")
+    llm_list.set_defaults(handler=_handle_llm_list)
+    llm_init = llm_commands.add_parser("init-config", help="生成 providers.json 配置模板")
+    llm_init.set_defaults(handler=_handle_llm_init)
+    llm_test = llm_commands.add_parser("test", help="测试某个服务的连接与密钥（会发起一次最小请求）")
+    llm_test.add_argument("--provider", default=None, help="服务 id（默认取当前引擎或第一个）")
+    llm_test.set_defaults(handler=_handle_llm_test)
     return parser
 
 
@@ -246,6 +256,61 @@ def _handle_telemetry(args: argparse.Namespace) -> int:
     print(f"统计上报：{'已开启（仅本地计数）' if enabled else '未开启（默认）'}")
     print(f"本地待发事件：{len(telemetry.pending())} 条（~/.bugcompass/telemetry-outbox/）")
     return 0
+
+
+def _handle_llm_list(args: argparse.Namespace) -> int:
+    from .llm import load_providers, providers_path
+    from .settings import get as get_setting
+
+    try:
+        providers = load_providers()
+    except Exception as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 2
+    using_presets = not providers_path().is_file()
+    print("大模型服务（OpenAI 兼容端点）")
+    if using_presets:
+        print(f"（尚未创建配置文件，以下为内置预设；运行 bugcompass llm init-config 生成可编辑模板：{providers_path()}）")
+    active = str(get_setting("active_engine", "codex"))
+    for provider in providers:
+        marker = "  ← 当前引擎" if provider.id == active else ""
+        key_hint = f"密钥环境变量 {provider.api_key_env}" if provider.needs_key else "无需密钥（本地）"
+        print(f"- {provider.id}：{provider.label} · {provider.model} · {key_hint}{marker}")
+    if active == "codex":
+        print("当前调查引擎：Codex CLI（默认）。要切换，请在 GUI 设置或新建调查页选择。")
+    return 0
+
+
+def _handle_llm_init(args: argparse.Namespace) -> int:
+    from .llm import write_providers_template
+
+    path = write_providers_template()
+    print(f"配置模板已就绪：{path}")
+    print("编辑里面的 model / base_url / api_key_env，删掉不用的服务；密钥本体放环境变量，不要写进文件。")
+    return 0
+
+
+def _handle_llm_test(args: argparse.Namespace) -> int:
+    from .llm import load_providers, provider_by_id, test_connection
+    from .settings import get as get_setting
+
+    try:
+        providers = load_providers()
+    except Exception as exc:
+        print(f"错误：{exc}", file=sys.stderr)
+        return 2
+    provider_id = args.provider or str(get_setting("active_engine", "codex"))
+    provider = provider_by_id(providers, provider_id)
+    if provider is None:
+        if provider_id == "codex":
+            provider = providers[0] if providers else None
+        if provider is None:
+            print(f"错误：找不到服务：{provider_id}（可用 bugcompass llm list 查看）", file=sys.stderr)
+            return 2
+    print(f"正在测试 {provider.label} · {provider.model}（{provider.base_url}）……")
+    ok, message = test_connection(provider)
+    print(("通过：" if ok else "失败：") + message)
+    return 0 if ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:

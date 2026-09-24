@@ -13,6 +13,8 @@ from .codex_runner import CodexRunBusyError, CodexRunResult, CodexRunner
 from .diagnostics import export_bundle, install_crash_handler, install_tk_handler
 from .dpi import apply_scaling, enable_windows_dpi_awareness, scale_percent
 from .gui_controller import CaseView, GuiController
+from .llm import LLMError, LLMProviderConfig, load_providers, test_connection
+from .llm_runner import LLMInvestigator
 from .metrics import (
     collect_case_metrics,
     format_cost,
@@ -51,15 +53,16 @@ def codex_status_for_case(
     viewed_case_id: str | None,
     viewed_status: str = "unknown",
     operation_busy: bool = False,
+    engine_label: str = "Codex",
 ) -> CodexStatusPresentation:
     """Return a case-scoped status so one run is never painted onto every case."""
     labels = {
-        "idle": "● Codex 空闲",
-        "working": "● Codex 工作中",
-        "stopping": "● Codex 正在停止",
-        "complete": "● Codex 已完成",
-        "failed": "● Codex 调查失败",
-        "stopped": "● Codex 已停止",
+        "idle": f"● {engine_label} 空闲",
+        "working": f"● {engine_label} 工作中",
+        "stopping": f"● {engine_label} 正在停止",
+        "complete": f"● {engine_label} 已完成",
+        "failed": f"● {engine_label} 调查失败",
+        "stopped": f"● {engine_label} 已停止",
     }
     if active_case_id and run_state in {"working", "stopping"}:
         if viewed_case_id == active_case_id:
@@ -102,7 +105,10 @@ def check_gui() -> tuple[bool, str]:
     except (ImportError, ModuleNotFoundError) as exc:
         return False, f"Tkinter 不可用：{exc}"
     if not CodexRunner.find_executable():
-        return False, "Tkinter 可以加载，但找不到 Codex CLI。请先安装并登录 Codex。"
+        return False, (
+            "Tkinter 可以加载，但找不到 Codex CLI。可以安装并登录 Codex，"
+            "或者在设置中配置大模型 API（bugcompass llm init-config）作为调查引擎。"
+        )
     return True, "Tkinter、BugCompass GUI 和 Codex CLI 均可用。"
 
 
@@ -154,9 +160,20 @@ def run_gui() -> int:
             # 打包成安装包后 parents[2] 不再存在，必须走统一的资源定位。
             from .resources import data_root
 
-            data_root_path = data_root()
-            self.codex_runner = CodexRunner(data_root_path)
-            self.practice_manager = PracticeManager(data_root_path, self.controller.workspace_path)
+            self._data_root_path = data_root()
+            self.codex_runner = CodexRunner(self._data_root_path)
+            self.practice_manager = PracticeManager(self._data_root_path, self.controller.workspace_path)
+            # 大模型 API 引擎：默认不启用（active_engine=codex），配置见 llm.py。
+            try:
+                self.llm_providers: list[LLMProviderConfig] = load_providers()
+                self.llm_provider_error = ""
+            except LLMError as exc:
+                self.llm_providers = []
+                self.llm_provider_error = str(exc)
+            self._llm_investigators: dict[str, LLMInvestigator] = {}
+            self._active_runner: Any = None
+            # 工作线程 → 主线程的安全回调通道（测试连接等异步操作用）。
+            self._main_queue: queue.SimpleQueue = queue.SimpleQueue()
             self.repo_var = tk.StringVar()
             self.repo_status_var = tk.StringVar(value="请选择本地 Blender 源码文件夹。")
             self.char_count_var = tk.StringVar(value="0 个字符")
@@ -190,6 +207,7 @@ def run_gui() -> int:
             self._apply_saved_ui_scale()
             self.option_add("*Font", self._font("SF Pro Text", 11))
             self.option_add("*insertBackground", self.TEXT)
+            self.engine_var = tk.StringVar(value=self._engine_display_name())
 
             self._configure_styles(ttk)
             self._build_layout(tk, ttk, filedialog, messagebox)
@@ -198,6 +216,7 @@ def run_gui() -> int:
             install_tk_handler(self)
             self._refresh_recent_cases()
             self.show_new_page()
+            self.after(200, self._poll_async)
             self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         def _configure_styles(self, ttk_module: Any) -> None:
@@ -403,8 +422,22 @@ def run_gui() -> int:
             self.bug_text.bind("<<Modified>>", self._update_char_count)
             ttk_module.Label(bug_card, textvariable=self.char_count_var, style="Muted.TLabel").grid(row=2, column=0, sticky="e", pady=(6, 0))
 
+            engine_row = ttk_module.Frame(page, style="App.TFrame")
+            engine_row.grid(row=4, column=0, sticky="ew", pady=(0, 12))
+            ttk_module.Label(engine_row, text="调查引擎", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(0, 8))
+            self.engine_combo = ttk_module.Combobox(
+                engine_row,
+                textvariable=self.engine_var,
+                values=self._engine_options(),
+                state="readonly",
+                width=32,
+            )
+            self.engine_combo.pack(side="left")
+            self.engine_combo.bind("<<ComboboxSelected>>", self._on_engine_changed)
+            ttk_module.Label(engine_row, text="默认 Codex CLI；大模型 API 可在设置里配置与测试", style="Muted.TLabel").pack(side="left", padx=(10, 0))
+
             action_row = ttk_module.Frame(page, style="App.TFrame")
-            action_row.grid(row=4, column=0, sticky="ew")
+            action_row.grid(row=5, column=0, sticky="ew")
             action_row.columnconfigure(0, weight=1)
             self.progress_label = ttk_module.Label(action_row, textvariable=self.progress_var, style="PageStatus.TLabel")
             self.progress_label.grid(row=0, column=0, sticky="w")
@@ -631,9 +664,11 @@ def run_gui() -> int:
                 return
 
             self.busy = True
-            self.codex_runner.reset_cancellation()
+            runner = self._engine_runner()
+            self._active_runner = runner
+            runner.reset_cancellation()
             self.create_button.configure(state="disabled")
-            self.progress_var.set("正在创建案件并准备 Codex……")
+            self.progress_var.set("正在创建案件并准备调查引擎……")
 
             def worker() -> None:
                 view: CaseView | None = None
@@ -646,7 +681,7 @@ def run_gui() -> int:
                     self.controller.set_case_status(view.case_id, "investigating")
                     view = self.controller.load_case(view.case_id)
                     self.events.put(("case_created", view))
-                    result = self.codex_runner.run(
+                    result = runner.run(
                         view,
                         progress=lambda text, case_id=view.case_id: self.events.put(("codex_progress", (case_id, text))),
                     )
@@ -786,6 +821,9 @@ def run_gui() -> int:
             self.events.put(("success", self.controller.load_case(view.case_id)))
 
         def _friendly_codex_error(self, result: CodexRunResult) -> str:
+            if getattr(result, "engine", "") == "llm":
+                # 大模型引擎的错误信息在生成时已是用户友好的中文指引。
+                return result.error_detail or "大模型调查未完成。"
             detail = result.error_detail.lower()
             error_message = self.codex_runner.extract_error_message(result.error_detail)
             if result.timed_out:
@@ -811,9 +849,10 @@ def run_gui() -> int:
                 or self.current_case.case_id != self.active_case_id
             ):
                 return
-            self.result_hint_var.set("正在取消 Codex 调查……")
-            self._set_codex_state("stopping", "正在安全终止当前 Codex 进程。")
-            self.codex_runner.cancel()
+            self.result_hint_var.set("正在取消当前调查……")
+            self._set_codex_state("stopping", "正在安全终止当前调查进程。")
+            runner = self._active_runner or self._engine_runner()
+            runner.cancel()
 
         def _continue_investigation(self) -> None:
             if self.busy or self.current_case is None:
@@ -828,17 +867,19 @@ def run_gui() -> int:
             self.busy = True
             self.codex_active = True
             self.active_case_id = view.case_id
-            self.codex_runner.reset_cancellation()
+            runner = self._engine_runner()
+            self._active_runner = runner
+            runner.reset_cancellation()
             self._refresh_recent_cases()
             self._set_codex_state("working", "正在继续同一个案件，不会重新创建 Case。")
-            self.result_hint_var.set("Codex 正在继续调查当前案件……")
+            self.result_hint_var.set("正在继续调查当前案件……")
             self._add_timeline("已继续当前案件，保留原有证据、预测和用户编辑。")
 
             def worker() -> None:
                 try:
                     if view.practice_session_id:
                         self.practice_manager.increment_ai_runs(view.case_id)
-                    result = self.codex_runner.run(
+                    result = runner.run(
                         view,
                         progress=lambda text, case_id=view.case_id: self.events.put(("codex_progress", (case_id, text))),
                         action="continue",
@@ -872,6 +913,7 @@ def run_gui() -> int:
                 viewed_case_id=viewed_case_id,
                 viewed_status=viewed_status,
                 operation_busy=self.busy,
+                engine_label=self._engine_label(),
             )
             colors = {
                 "idle": self.MUTED,
@@ -1355,7 +1397,9 @@ def run_gui() -> int:
             self.busy = True
             self.codex_active = True
             self.active_case_id = view.case_id
-            self.codex_runner.reset_cancellation()
+            runner = self._engine_runner()
+            self._active_runner = runner
+            runner.reset_cancellation()
             self._refresh_recent_cases()
             self._set_codex_state("working", "正在读取新增证据并更新同一个案件。")
             if self.current_case is not None and self.current_case.case_id == view.case_id:
@@ -1365,7 +1409,7 @@ def run_gui() -> int:
                 try:
                     if view.practice_session_id:
                         self.practice_manager.increment_ai_runs(view.case_id)
-                    result = self.codex_runner.run(
+                    result = runner.run(
                         view,
                         progress=lambda text, active_id=view.case_id: self.events.put(("codex_progress", (active_id, text))),
                         action=action,
@@ -1390,6 +1434,64 @@ def run_gui() -> int:
             factor = self.ui_scale.factor if hasattr(self, "ui_scale") else 1.0
             scaled = max(6, int(round(size * factor)))
             return (family, scaled, *extra)
+
+        # ------------------------------------------------------ 调查引擎选择
+        def _engine_options(self) -> list[str]:
+            options = ["Codex CLI（默认）"]
+            options.extend(provider.display_name for provider in self.llm_providers)
+            return options
+
+        def _active_provider(self) -> LLMProviderConfig | None:
+            engine = str(self.settings.get("active_engine", "codex") or "codex")
+            if engine == "codex":
+                return None
+            for provider in self.llm_providers:
+                if provider.id == engine:
+                    return provider
+            return None
+
+        def _engine_display_name(self) -> str:
+            provider = self._active_provider()
+            return "Codex CLI（默认）" if provider is None else provider.display_name
+
+        def _engine_label(self) -> str:
+            provider = self._active_provider()
+            return "Codex" if provider is None else provider.label
+
+        def _engine_runner(self) -> Any:
+            """当前引擎对应的运行器（run/cancel/reset_cancellation 接口一致）。"""
+            provider = self._active_provider()
+            if provider is None:
+                return self.codex_runner
+            investigator = self._llm_investigators.get(provider.id)
+            if investigator is None or investigator.provider != provider:
+                investigator = LLMInvestigator(self._data_root_path, provider)
+                self._llm_investigators[provider.id] = investigator
+            return investigator
+
+        def _on_engine_changed(self, _event: Any = None) -> None:
+            selection = self.engine_var.get()
+            provider = next(
+                (item for item in self.llm_providers if item.display_name == selection),
+                None,
+            )
+            self.settings["active_engine"] = provider.id if provider else "codex"
+            save_settings(self.settings)
+            name = provider.display_name if provider else "Codex CLI"
+            self.progress_var.set(f"调查引擎已切换为 {name}（已保存）。")
+
+        def _poll_async(self) -> None:
+            """把工作线程排进来的 UI 更新放到主线程执行。"""
+            while True:
+                try:
+                    callback = self._main_queue.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    callback()
+                except Exception:  # pragma: no cover - 单个回调失败不中断轮询
+                    pass
+            self.after(200, self._poll_async)
 
         def _apply_saved_ui_scale(self) -> None:
             saved = int(self.settings.get("ui_scale_percent", 100) or 100)
@@ -1605,6 +1707,68 @@ def run_gui() -> int:
                 length=440,
             )
             zoom_slider.pack(fill="x")
+
+            # 模型服务（API）
+            llm_box = ttk.Frame(shell, style="Surface.TFrame", padding=14)
+            llm_box.pack(fill="x", pady=(10, 0))
+            ttk.Label(llm_box, text="模型服务（API 调查引擎）", style="Heading.TLabel").pack(anchor="w")
+            if self.llm_provider_error:
+                ttk.Label(llm_box, text=f"配置读取失败：{self.llm_provider_error}", style="Status.TLabel", justify="left").pack(anchor="w", pady=(3, 6))
+            ttk.Label(
+                llm_box,
+                text="密钥只从环境变量读取，永不写入文件、备份或诊断包。\n"
+                     "providers.json 只保存端点、模型名和「密钥环境变量名」。",
+                style="Muted.TLabel", justify="left",
+            ).pack(anchor="w", pady=(3, 8))
+            if self.llm_providers:
+                provider_names = [provider.display_name for provider in self.llm_providers]
+                llm_row = ttk.Frame(llm_box, style="Surface.TFrame")
+                llm_row.pack(fill="x")
+                self._llm_test_var = tk.StringVar(value=provider_names[0])
+                ttk.Label(llm_row, text="服务", style="Muted.TLabel").pack(side="left", padx=(0, 6))
+                provider_combo = tk.OptionMenu(llm_row, self._llm_test_var, *provider_names)
+                provider_combo.configure(
+                    background=self.SURFACE_ALT, foreground=self.TEXT,
+                    activebackground=self.BORDER, activeforeground=self.TEXT,
+                    highlightthickness=0, bd=0,
+                )
+                provider_combo.pack(side="left")
+                self._llm_status_var = tk.StringVar(value="")
+                ttk.Label(llm_box, textvariable=self._llm_status_var, style="Status.TLabel", justify="left").pack(anchor="w", pady=(6, 4))
+
+                def chosen_provider() -> LLMProviderConfig:
+                    return next(
+                        (item for item in self.llm_providers if item.display_name == self._llm_test_var.get()),
+                        self.llm_providers[0],
+                    )
+
+                def run_test() -> None:
+                    provider = chosen_provider()
+                    self._llm_status_var.set(f"正在测试 {provider.display_name}……")
+
+                    def work() -> None:
+                        ok, message = test_connection(provider)
+                        def apply() -> None:
+                            self._llm_status_var.set(("✅ " if ok else "❌ ") + message)
+                        self._main_queue.put(apply)
+
+                    threading.Thread(target=work, daemon=True).start()
+
+                def use_provider() -> None:
+                    provider = chosen_provider()
+                    self.settings["active_engine"] = provider.id
+                    save_settings(self.settings)
+                    if hasattr(self, "engine_combo"):
+                        self.engine_var.set(provider.display_name)
+                    self._llm_status_var.set(f"已设为当前引擎：{provider.display_name}")
+
+                ttk.Button(llm_row, text="测试连接", command=run_test, style="Action.TButton").pack(side="left", padx=(10, 0))
+                ttk.Button(llm_row, text="设为当前引擎", command=use_provider, style="Action.TButton").pack(side="left", padx=(8, 0))
+                chosen = chosen_provider()
+                key_hint = f"密钥环境变量：{chosen.api_key_env}" if chosen.needs_key else "本地服务，无需密钥"
+                ttk.Label(llm_box, text=key_hint, style="Muted.TLabel").pack(anchor="w", pady=(4, 2))
+            else:
+                ttk.Label(llm_box, text="没有可用服务：运行 bugcompass llm init-config 生成配置模板后重开设置。", style="Muted.TLabel", justify="left").pack(anchor="w")
 
             # 统计上报（默认关闭）
             tele_box = ttk.Frame(shell, style="Surface.TFrame", padding=14)
