@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import threading
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from .codex_runner import CodexRunBusyError, CodexRunResult, CodexRunner
 from .diagnostics import export_bundle, install_crash_handler, install_tk_handler
 from .dpi import apply_scaling, enable_windows_dpi_awareness, scale_percent
 from .gui_controller import CaseView, GuiController
+from .issue_scout import IssueRecord, IssueScore, ScoutError, export_markdown as export_scan_markdown, fetch_open_issues, filter_issues, issue_to_bug_text, load_last_scan, save_scan, scan_records_from_cache, scan_scores_from_cache
 from .key_store import delete_key, get_key, save_key, storage_hint
 from .llm import LLMError, LLMProviderConfig, load_providers, resolve_api_key, test_connection
 from .llm_runner import LLMInvestigator
@@ -255,6 +257,9 @@ def run_gui() -> int:
             style.configure("Dark.TEntry", fieldbackground=self.SURFACE_ALT, foreground=self.TEXT, insertcolor=self.TEXT, padding=10, borderwidth=1)
             style.configure("Dark.TLabelframe", background=self.SURFACE, bordercolor=self.BORDER, relief="solid", borderwidth=1)
             style.configure("Dark.TLabelframe.Label", background=self.SURFACE, foreground=self.MUTED, font=self._font("SF Pro Text", 9, "bold"))
+            style.configure("Scout.Treeview", background=self.SURFACE_ALT, fieldbackground=self.SURFACE_ALT, foreground=self.TEXT, borderwidth=0, rowheight=30)
+            style.configure("Scout.Treeview.Heading", background=self.SURFACE, foreground=self.MUTED, borderwidth=0, relief="flat", font=self._font("SF Pro Text", 9, "bold"))
+            style.map("Scout.Treeview", background=[("selected", "#654127")], foreground=[("selected", self.TEXT)])
 
         def _build_layout(self, tk_module: Any, ttk_module: Any, file_dialog: Any, message_box: Any) -> None:
             self.file_dialog = file_dialog
@@ -278,7 +283,8 @@ def run_gui() -> int:
             ttk_module.Label(brand_text, text="BUGCOMPASS", style="Brand.TLabel").pack(anchor="w")
             ttk_module.Label(brand_text, text="Blender 调查台", style="SidebarTitle.TLabel").pack(anchor="w")
             ttk_module.Button(sidebar, text="＋  新建调查", command=self.show_new_page, style="Primary.TButton").pack(fill="x", pady=(0, 8))
-            ttk_module.Button(sidebar, text="◫  历史 PR 练习", command=self.show_practice_page, style="Action.TButton").pack(fill="x", pady=(0, 28))
+            ttk_module.Button(sidebar, text="◫  历史 PR 练习", command=self.show_practice_page, style="Action.TButton").pack(fill="x", pady=(0, 8))
+            ttk_module.Button(sidebar, text="🔭  AI 挑选 Issue", command=self._open_issue_scout_dialog, style="Action.TButton").pack(fill="x", pady=(0, 28))
             ttk_module.Label(sidebar, text="最近案件", style="SidebarTitle.TLabel", font=self._font("SF Pro Text", 11, "bold")).pack(anchor="w")
             ttk_module.Label(sidebar, text="保存在本地 · 最多显示 10 个", style="SidebarHint.TLabel").pack(anchor="w", pady=(3, 12))
             self.recent_list = tk_module.Listbox(
@@ -1864,6 +1870,307 @@ def run_gui() -> int:
                     _sp.Popen(["xdg-open", str(Path(path).parent)])
             except OSError:
                 pass
+
+        # ------------------------------------------------- AI 挑选 Issue
+        def _open_issue_scout_dialog(self) -> None:
+            """AI 筛选 Blender tracker 上的 issue（抓取 + 打分 + 一键建案），全程图形界面。"""
+            from .issue_scout import FALLBACK_MODULES
+
+            dialog = tk.Toplevel(self)
+            dialog.title("AI 挑选 Issue — Blender tracker 筛选")
+            dialog.geometry("1020x700")
+            dialog.minsize(880, 600)
+            dialog.configure(background=self.BACKGROUND)
+            dialog.transient(self)
+            self._scout_dialog = dialog
+
+            shell = ttk.Frame(dialog, style="App.TFrame", padding=(22, 18))
+            shell.pack(fill="both", expand=True)
+            header = ttk.Frame(shell, style="App.TFrame")
+            header.pack(fill="x", pady=(0, 10))
+            brand = ttk.Frame(header, style="App.TFrame")
+            brand.pack(side="left")
+            ttk.Label(brand, text="ISSUE SCOUT", style="Eyebrow.TLabel").pack(anchor="w")
+            ttk.Label(brand, text="AI 挑选 Issue", style="Title.TLabel", font=self._font("SF Pro Display", 20, "bold")).pack(anchor="w", pady=(2, 0))
+            self._scout_status_var = tk.StringVar(value="选择条件后点击「开始筛选」。筛选需要联网抓取 tracker，并用你配置的大模型评分。")
+            ttk.Label(header, textvariable=self._scout_status_var, style="PageStatus.TLabel", wraplength=380, justify="left").pack(side="right", anchor="ne")
+
+            # ---- 选项区
+            options = ttk.LabelFrame(shell, text="筛选条件", style="Dark.TLabelframe", padding=14)
+            options.pack(fill="x", pady=(0, 10))
+            ttk.Label(options, text="模块（可多选；不选＝全部）", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
+            modules_box = ttk.Frame(options, style="Card.TFrame")
+            modules_box.pack(fill="x", pady=(6, 10))
+            module_vars: dict[str, tk.BooleanVar] = {}
+            for index, module in enumerate(FALLBACK_MODULES):
+                column, row = index % 5, index // 5
+                var = tk.BooleanVar(value=False)
+                module_vars[module] = var
+                tk.Checkbutton(
+                    modules_box, text=module.removeprefix("Module/"), variable=var,
+                    background=self.SURFACE, foreground=self.TEXT, activebackground=self.SURFACE,
+                    activeforeground=self.TEXT, selectcolor=self.SURFACE_ALT,
+                    highlightthickness=0, bd=0, font=("SF Pro Text", 9), anchor="w",
+                ).grid(row=row, column=column, sticky="w", padx=(0, 14), pady=1)
+            row2 = ttk.Frame(options, style="Card.TFrame")
+            row2.pack(fill="x")
+            ttk.Label(row2, text="类型", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(0, 8))
+            type_var = tk.StringVar(value="全部")
+            for value, label in (("全部", "全部"), ("Type/Bug", "Bug"), ("Type/Report", "功能需求"), ("Type/Known Issue", "已知问题")):
+                tk.Radiobutton(
+                    row2, text=label, variable=type_var, value=value,
+                    background=self.SURFACE, foreground=self.TEXT, activebackground=self.SURFACE,
+                    activeforeground=self.TEXT, selectcolor=self.SURFACE_ALT, highlightthickness=0, bd=0,
+                    font=("SF Pro Text", 10),
+                ).pack(side="left", padx=(0, 14))
+            ttk.Label(row2, text="数量", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(16, 6))
+            count_spin = tk.Spinbox(
+                row2, from_=10, to=100, increment=10, width=5,
+                background=self.SURFACE_ALT, foreground=self.TEXT, buttonbackground=self.SURFACE_ALT,
+                relief="flat", highlightthickness=1, highlightbackground=self.BORDER, readonlybackground=self.SURFACE_ALT,
+            )
+            count_spin.delete(0, "end")
+            count_spin.insert(0, "40")
+            count_spin.pack(side="left")
+            ttk.Label(row2, text="评分引擎", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(16, 6))
+            self._scout_engine_var = tk.StringVar()
+            engine_names = []
+            for provider in self.llm_providers:
+                missing = provider.needs_key and not get_key(provider.id) and not os.environ.get(provider.api_key_env)
+                engine_names.append(provider.display_name + ("（未导入密钥）" if missing else ""))
+            if engine_names:
+                self._scout_engine_var.set(engine_names[0])
+                engine_menu = tk.OptionMenu(row2, self._scout_engine_var, *engine_names)
+                engine_menu.configure(
+                    background=self.SURFACE_ALT, foreground=self.TEXT,
+                    activebackground=self.BORDER, activeforeground=self.TEXT,
+                    highlightthickness=0, bd=0,
+                )
+                engine_menu.pack(side="left")
+            else:
+                ttk.Label(row2, text="尚未配置大模型服务（⚙ 设置 → 模型服务）", style="Status.TLabel").pack(side="left")
+            self._scout_start_button = ttk.Button(
+                options, text="🚀 开始筛选（联网抓取 + AI 评分）", command=lambda: self._scout_run_scan(dialog, module_vars, type_var, count_spin), style="Primary.TButton"
+            )
+            self._scout_start_button.pack(anchor="w", pady=(12, 0))
+
+            # ---- 结果区
+            result_card = ttk.LabelFrame(shell, text="筛选结果（按 AI 评分排序）", style="Dark.TLabelframe", padding=10)
+            result_card.pack(fill="both", expand=True)
+            columns = ("score", "number", "title", "difficulty", "module", "comments")
+            self._scout_tree = ttk.Treeview(result_card, columns=columns, show="headings", style="Scout.Treeview", selectmode="browse")
+            for cid, text, width, anchor in (
+                ("score", "评分", 60, "center"), ("number", "#", 70, "w"),
+                ("title", "标题", 460, "w"), ("difficulty", "难度", 70, "center"),
+                ("module", "模块", 170, "w"), ("comments", "评论", 50, "center"),
+            ):
+                self._scout_tree.heading(cid, text=text)
+                self._scout_tree.column(cid, width=width, anchor=anchor, stretch=(cid == "title"))
+            tree_scroll = ttk.Scrollbar(result_card, orient="vertical", command=self._scout_tree.yview)
+            self._scout_tree.configure(yscrollcommand=tree_scroll.set)
+            self._scout_tree.pack(side="left", fill="both", expand=True)
+            tree_scroll.pack(side="left", fill="y")
+            detail = ttk.Frame(result_card, style="Card.TFrame", width=300)
+            detail.pack(side="left", fill="y", padx=(10, 0))
+            self._scout_detail_text = tk.Text(
+                detail, wrap="word", width=34, relief="flat", background=self.SURFACE_ALT,
+                foreground=self.MUTED, padx=10, pady=10, font=("SF Pro Text", 10), state="disabled",
+            )
+            self._scout_detail_text.pack(fill="both", expand=True)
+            actions = ttk.Frame(shell, style="App.TFrame")
+            actions.pack(fill="x", pady=(10, 0))
+            ttk.Button(actions, text="创建调查案件  →", command=lambda: self._scout_create_case(), style="Primary.TButton").pack(side="left")
+            ttk.Button(actions, text="在浏览器打开", command=lambda: self._scout_open_browser(), style="Action.TButton").pack(side="left", padx=(10, 0))
+            ttk.Button(actions, text="导出结果…", command=lambda: self._scout_export(), style="Action.TButton").pack(side="left", padx=(10, 0))
+            ttk.Label(actions, text="评分标准可用 ~/.bugcompass/scout-prompt.md 私有化", style="Muted.TLabel").pack(side="right")
+
+            # 状态
+            self._scout_records: list[IssueRecord] = []
+            self._scout_scores: dict[int, IssueScore] = {}
+            self._scout_tree.bind("<<TreeviewSelect>>", self._scout_on_select)
+
+            # 离线缓存：打开即可看上次结果
+            cache = load_last_scan()
+            if cache:
+                records = scan_records_from_cache(cache)
+                scores = scan_scores_from_cache(cache)
+                fetched_at = str(cache.get("fetched_at", ""))[:16].replace("T", " ")
+                if records:
+                    self._scout_populate(records, scores)
+                    self._scout_status_var.set(f"显示上次筛选结果（{fetched_at}，离线缓存）。可重新筛选获取最新。")
+            dialog.grab_set()
+
+        def _scout_current_provider(self):
+            if not self.llm_providers:
+                return None
+            chosen = self._scout_engine_var.get()
+            for provider in self.llm_providers:
+                if chosen.startswith(provider.display_name):
+                    return provider
+            return self.llm_providers[0]
+
+        def _scout_run_scan(self, dialog: Any, module_vars: dict[str, Any], type_var: Any, count_spin: Any) -> None:
+            provider = self._scout_current_provider()
+            if provider is None:
+                self.message_box.showwarning("缺少评分引擎", "请先在 ⚙ 设置 → 模型服务里配置并导入密钥，再使用 AI 筛选。", parent=dialog)
+                return
+            try:
+                resolve_api_key(provider)
+            except LLMError:
+                if self.message_box.askyesno("需要 API 密钥", f"{provider.display_name} 还没有密钥，现在导入吗？", parent=dialog):
+                    self._import_api_key_dialog(provider)
+                return
+            modules = [name for name, var in module_vars.items() if var.get()]
+            types = [] if type_var.get() == "全部" else [type_var.get()]
+            try:
+                limit = max(10, min(100, int(count_spin.get())))
+            except (TypeError, ValueError):
+                limit = 40
+            self._scout_start_button.configure(state="disabled")
+            self._scout_status_var.set("正在抓取 Blender tracker……")
+
+            def alive() -> bool:
+                try:
+                    return bool(dialog.winfo_exists())
+                except Exception:
+                    return False
+
+            def apply_ui(fn: Any) -> None:
+                self._main_queue.put(lambda: fn() if alive() else None)
+
+            def work() -> None:
+                try:
+                    from .issue_scout import score_issues
+
+                    records = fetch_open_issues(limit=limit, progress=lambda text: apply_ui(lambda: self._scout_status_var.set(text)))
+                    records = filter_issues(records, modules=modules, types=types)
+                    if not records:
+                        apply_ui(lambda: (self._scout_status_var.set("没有符合条件的 issue，试着放宽模块或类型。"), self._scout_start_button.configure(state="normal")))
+                        return
+                    scores = score_issues(provider, records, progress=lambda text: apply_ui(lambda: self._scout_status_var.set(text)))
+
+                    def done() -> None:
+                        self._scout_records = records
+                        self._scout_scores = scores
+                        self._scout_populate(records, scores)
+                        save_scan(records, scores, {"modules": modules, "types": types, "limit": limit, "engine": provider.id})
+                        ranked = sum(1 for s in scores.values() if s.score is not None)
+                        self._scout_status_var.set(f"筛选完成：{len(records)} 个 issue，其中 {ranked} 个已评分（已缓存，断网可看）。")
+                        self._scout_start_button.configure(state="normal")
+
+                    apply_ui(done)
+                except ScoutError as exc:
+                    message = str(exc)
+                    apply_ui(lambda: (self._scout_status_var.set(message), self._scout_start_button.configure(state="normal")))
+                except Exception as exc:  # pragma: no cover
+                    message = f"筛选失败：{exc}"
+                    apply_ui(lambda: (self._scout_status_var.set(message), self._scout_start_button.configure(state="normal")))
+
+            threading.Thread(target=work, daemon=True).start()
+
+        def _scout_populate(self, records: list[IssueRecord], scores: dict[int, IssueScore]) -> None:
+            tree = self._scout_tree
+            tree.delete(*tree.get_children())
+            ranked = sorted(records, key=lambda r: (scores.get(r.number).score is None if r.number in scores else True, -(scores[r.number].score or 0) if r.number in scores else 0))
+            for record in ranked:
+                score = scores.get(record.number)
+                value = f"{score.score}" if score and score.score is not None else "—"
+                module = record.module_labels[0].removeprefix("Module/") if record.module_labels else "其他"
+                tree.insert("", "end", iid=str(record.number), values=(
+                    value, f"#{record.number}", record.title[:80],
+                    score.difficulty if score else "未知", module, record.comments,
+                ))
+
+        def _scout_selected_record(self) -> IssueRecord | None:
+            selection = self._scout_tree.selection()
+            if not selection:
+                return None
+            number = int(selection[0])
+            return next((r for r in self._scout_records if r.number == number), None)
+
+        def _scout_on_select(self, _event: Any = None) -> None:
+            record = self._scout_selected_record()
+            if record is None:
+                return
+            score = self._scout_scores.get(record.number)
+            lines = [f"#{record.number} {record.title}", ""]
+            if score:
+                lines.append(f"AI 评分：{score.score if score.score is not None else '未评分'}/10 · {score.difficulty}")
+                lines.append(f"理由：{score.reason}")
+                lines.append("")
+            lines.append(f"标签：{', '.join(record.labels) or '无'}")
+            lines.append(f"创建：{record.created_at[:10]} · 评论 {record.comments}")
+            lines.append("")
+            lines.append(record.body[:1500] or "（正文为空）")
+            self._scout_detail_text.configure(state="normal")
+            self._scout_detail_text.delete("1.0", "end")
+            self._scout_detail_text.insert("1.0", "\n".join(lines))
+            self._scout_detail_text.configure(state="disabled")
+
+        def _scout_create_case(self) -> None:
+            record = self._scout_selected_record()
+            if record is None:
+                self.message_box.showinfo("选择 Issue", "先在列表里选中一个 issue。", parent=self._scout_dialog)
+                return
+            text = issue_to_bug_text(record, self._scout_scores.get(record.number))
+            workspace_repo = None
+            try:
+                from .workspace import load_workspace
+
+                workspace_repo = load_workspace(self.controller.workspace_path).repo_path
+            except BugCompassError:
+                workspace_repo = None
+            self._scout_dialog.destroy()
+            if workspace_repo is not None and self.controller.validate_repository(workspace_repo).valid:
+                self.repo_var.set(str(workspace_repo))
+                self.bug_text.delete("1.0", "end")
+                self.bug_text.insert("1.0", text)
+                self._set_char_count()
+                if not self.busy:
+                    self._start_create()
+                else:
+                    self.show_new_page()
+                    self.progress_var.set("已填入 issue，等当前任务结束后点「开始调查」。")
+            else:
+                self.bug_text.delete("1.0", "end")
+                self.bug_text.insert("1.0", text)
+                self._set_char_count()
+                self.show_new_page()
+                self.progress_var.set("已填入选中的 issue；请先选择本地 Blender 源码文件夹，再点「开始调查」。")
+
+        def _scout_open_browser(self) -> None:
+            record = self._scout_selected_record()
+            if record is None:
+                return
+            import subprocess as _sp
+            import sys as _sys
+            try:
+                if _sys.platform == "darwin":
+                    _sp.Popen(["open", record.url])
+                elif os.name == "nt":
+                    os.startfile(record.url)  # type: ignore[attr-defined]
+                else:
+                    _sp.Popen(["xdg-open", record.url])
+            except OSError:
+                pass
+
+        def _scout_export(self) -> None:
+            if not self._scout_records:
+                self.message_box.showinfo("导出", "还没有筛选结果可导出。", parent=self._scout_dialog)
+                return
+            target = self.file_dialog.asksaveasfilename(
+                title="导出筛选结果", defaultextension=".md",
+                initialfile=f"ai-issue-scan-{__import__('datetime').datetime.now().strftime('%Y%m%d-%H%M')}.md",
+                filetypes=[("Markdown", "*.md")], parent=self._scout_dialog,
+            )
+            if not target:
+                return
+            try:
+                export_scan_markdown(self._scout_records, self._scout_scores, Path(target))
+            except OSError as exc:
+                self.message_box.showerror("导出失败", str(exc), parent=self._scout_dialog)
+                return
+            self.message_box.showinfo("导出完成", f"已保存：\n{target}", parent=self._scout_dialog)
 
         # ------------------------------------------------------- 密钥导入
         def _import_api_key_dialog(self, provider: LLMProviderConfig) -> None:

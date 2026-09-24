@@ -161,6 +161,15 @@ def main() -> int:
         key_store.delete_key(app.llm_providers[0].id)
         check("密钥删除", key_store.get_key(app.llm_providers[0].id) is None)
 
+        # 1d) AI 挑选 Issue 对话框（打开不联网；显示离线缓存或空态）
+        app._open_issue_scout_dialog()
+        app.update()
+        scout_dialogs = [w for w in app.winfo_children() if isinstance(w, __import__("tkinter").Toplevel) and w.title().startswith("AI 挑选")]
+        check("Issue 筛选对话框可打开", len(scout_dialogs) == 1)
+        check("筛选对话框含结果表格", hasattr(app, "_scout_tree"))
+        for d in scout_dialogs:
+            d.destroy()
+
         # 2) 渲染结果页（含滚动容器、指标卡、思维导图）
         app._show_case(view)
         app.update()
