@@ -154,6 +154,13 @@ def main() -> int:
         check("引擎切换为 LLM", app._engine_label() == app.llm_providers[0].label, app._engine_label())
         app.settings["active_engine"] = "codex"
 
+        # 1c) 密钥存储（GUI 导入的后端）
+        from bugcompass import key_store
+        mode_used = key_store.save_key(app.llm_providers[0].id, "sk-smoke-test")
+        check("密钥保存", key_store.get_key(app.llm_providers[0].id) == "sk-smoke-test", mode_used)
+        key_store.delete_key(app.llm_providers[0].id)
+        check("密钥删除", key_store.get_key(app.llm_providers[0].id) is None)
+
         # 2) 渲染结果页（含滚动容器、指标卡、思维导图）
         app._show_case(view)
         app.update()
