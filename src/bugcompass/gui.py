@@ -300,6 +300,8 @@ def run_gui() -> int:
             )
             self.recent_list.pack(fill="both", expand=True)
             self.recent_list.bind("<<ListboxSelect>>", self._open_selected_recent)
+            # 设置入口必须全局可见（此前只存在于案件工作台，新用户在默认页找不到）。
+            ttk_module.Button(sidebar, text=tr("⚙ 设置"), command=self._open_settings, style="Ghost.TButton").pack(side="bottom", fill="x", pady=(12, 0))
 
             self.page_host = ttk_module.Frame(shell, style="App.TFrame", padding=(34, 28, 34, 26))
             self.page_host.grid(row=0, column=1, sticky="nsew")

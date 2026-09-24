@@ -131,6 +131,23 @@ def main() -> int:
 
         # 普通用户从独立报告模式起步，无需源码仓库或调查进程。
         check("默认进入报告 Bug 模式", app.report_page.winfo_ismapped())
+
+        # 设置入口必须在默认页就可见（曾只存在于案件工作台，新用户找不到）
+        import tkinter as _tk
+        from tkinter import ttk as _ttk
+
+        def _walk_all(widget):
+            for child in widget.winfo_children():
+                yield child
+                yield from _walk_all(child)
+
+        check(
+            "默认页可见 ⚙ 设置入口",
+            any(
+                isinstance(w, _ttk.Button) and "设置" in str(w.cget("text")) and w.winfo_ismapped()
+                for w in _walk_all(app)
+            ),
+        )
         app._new_standalone_report()
         app.update()
         check("无源码可创建报告草稿", len(app.report_store.list_reports()) == 1)
