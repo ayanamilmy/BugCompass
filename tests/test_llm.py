@@ -95,7 +95,7 @@ def valid_investigation(case_id: str) -> dict:
             }
             for index in range(1, 4)
         ],
-        "evidence": [{"id": "E1", "kind": "fact", "statement": "事实", "source_references": []}],
+        "evidence": [{"id": "E1", "kind": "fact", "statement": "事实", "source_type": "issue", "source_references": []}],
         "unknowns": [{"id": "U1", "question": "未知"}],
         "suggested_experiments": [],
         "causal_graph": {"nodes": [], "edges": []},
@@ -372,6 +372,12 @@ class RunnerTests(unittest.TestCase):
     def investigator(self) -> LLMInvestigator:
         return LLMInvestigator(Path(self._tmp.name) / "repo", make_provider())
 
+    def test_prompt_uses_compact_output_without_full_schema(self) -> None:
+        investigator = self.investigator()
+        system = investigator._build_messages(self.view, "initial", None)[0]["content"]
+        self.assertIn("紧凑输出格式", system)
+        self.assertNotIn('"$schema"', system)
+
     def test_full_run_with_tool_call(self) -> None:
         investigator = self.investigator()
         tool_response = llm.ChatResponse(
@@ -499,6 +505,70 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("结构化结果无效", prompts[1])
         self.assertIn("delimiter", prompts[1])
 
+    def test_compact_retry_builds_valid_investigation_without_extra_generation(self) -> None:
+        investigator = self.investigator()
+        invalid = llm.ChatResponse(content='{"summary": {"problem": "问题" "actual_behavior": "异常"}}',
+                                   tool_calls=[], usage={}, finish_reason="stop")
+        draft = {
+            "summary": {"problem": "打开文件后崩溃", "actual_behavior": "程序退出"},
+            "hypotheses": [
+                {"id": f"H{i}", "title": f"路径 {i}", "claim": "可能有空指针",
+                 "priority": priority, "basis": ["源码行附近有检查分支"],
+                 "next_step": "只读检查分支条件", "estimated_cost": "low",
+                 "source_references": [{"path": "source/blender/a.cc", "line": 1}]}
+                for i, priority in enumerate(("high", "medium", "low"), 1)
+            ],
+            "evidence": [{"id": "E1", "kind": "fact", "statement": "报告称打开文件后崩溃",
+                          "source_type": "issue", "source_references": []}],
+            "unknowns": [{"id": "U1", "question": "具体 Blender 版本？"}],
+        }
+        compact = llm.ChatResponse(content=json.dumps(draft, ensure_ascii=False), tool_calls=[],
+                                   usage={}, finish_reason="stop")
+        calls = []
+
+        def fake_chat(provider, messages, **kwargs):
+            calls.append((messages, kwargs))
+            return invalid if len(calls) == 1 else compact
+
+        with mock.patch.object(llm_runner, "chat_completion", side_effect=fake_chat), \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-ok"}):
+            result = investigator.run(self.view, action="initial")
+        self.assertTrue(result.investigation_updated, result.error_detail)
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("assistant", [item["role"] for item in calls[1][0][-2:]])
+        saved = read_investigation(self.case_dir / "investigation.json")
+        self.assertEqual(saved["case_id"], "case-1")
+        self.assertEqual(saved["stage"], "paths")
+        self.assertEqual(len(saved["hypotheses"]), 3)
+        self.assertEqual(saved["hypotheses"][0]["source_references"][0]["line"], 1)
+        self.assertEqual(saved["hypotheses"][0]["source_references"][0]["symbol"], "")
+        self.assertEqual(saved["unknowns"][0]["impact"], "")
+        self.assertEqual(saved["semantic_diff"]["status"], "not_available")
+
+    def test_compact_update_preserves_unmentioned_existing_sections(self) -> None:
+        previous = valid_investigation("case-1")
+        previous["summary"]["expected_behavior"] = "现有预期"
+        previous["causal_graph"] = {"nodes": [{"id": "N1", "label": "用户节点", "kind": "trigger",
+                                                     "certainty": "fact", "x": 1, "y": 2,
+                                                     "user_edited": True, "user_created": True}], "edges": []}
+        draft = {"summary": {"problem": "更新的问题"}, "hypotheses": previous["hypotheses"]}
+        completed = LLMInvestigator._complete_draft(draft, "case-1", previous)
+        self.assertEqual(completed["summary"]["expected_behavior"], "现有预期")
+        self.assertEqual(completed["causal_graph"]["nodes"][0]["label"], "用户节点")
+        self.assertTrue(completed["causal_graph"]["nodes"][0]["user_edited"])
+        self.assertEqual(completed["summary"]["problem"], "更新的问题")
+        self.assertEqual(previous["summary"]["problem"], "测试问题")
+
+    def test_compact_draft_rejects_wrong_case_and_unattributed_evidence(self) -> None:
+        draft = valid_investigation("case-1")
+        draft["case_id"] = "another-case"
+        with self.assertRaisesRegex(ValueError, "case_id"):
+            LLMInvestigator._complete_draft(draft, "case-1")
+        draft["case_id"] = "case-1"
+        del draft["evidence"][0]["source_type"]
+        with self.assertRaisesRegex(ValueError, "source_type"):
+            LLMInvestigator._complete_draft(draft, "case-1")
+
     def test_forced_final_uses_larger_budget_and_reports_repeat_truncation(self) -> None:
         investigator = LLMInvestigator(Path(self._tmp.name) / "repo", make_provider(max_turns=1))
         tool_response = llm.ChatResponse(
@@ -517,11 +587,41 @@ class RunnerTests(unittest.TestCase):
             result = investigator.run(self.view, action="initial")
         self.assertFalse(result.investigation_updated)
         self.assertIn("输出长度上限", result.error_detail)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         self.assertEqual(calls[1][1]["max_tokens"], llm_runner.FINAL_MAX_TOKENS)
         self.assertIn("紧凑", calls[1][0][-1]["content"])
         self.assertEqual(calls[2][1]["max_tokens"], llm_runner.FINAL_MAX_TOKENS)
+        self.assertIn("最小的调查 JSON", calls[3][0][-1]["content"])
+        self.assertEqual(calls[3][1]["temperature"], 0)
         self.assertEqual(read_investigation(self.case_dir / "investigation.json")["hypotheses"], [])
+
+    def test_truncated_retry_falls_back_to_core_paths(self) -> None:
+        investigator = self.investigator()
+        malformed = llm.ChatResponse(content="这次没生成 JSON", tool_calls=[], usage={}, finish_reason="stop")
+        truncated = llm.ChatResponse(content='{"summary": {', tool_calls=[], usage={}, finish_reason="length")
+        core = {
+            "summary": {"problem": "打开文件后崩溃"},
+            "hypotheses": [
+                {"id": f"H{i}", "title": f"路径 {i}", "claim": "分支条件可能错误",
+                 "priority": priority, "basis": ["源码行可疑"], "next_step": "复核调用路径",
+                 "source_references": [{"path": "source/blender/a.cc", "line": 1}]}
+                for i, priority in enumerate(("high", "medium", "low"), 1)
+            ],
+            "evidence": [{"id": "E1", "kind": "fact", "statement": "报告了崩溃",
+                          "source_type": "issue", "source_references": []}],
+            "unknowns": [],
+        }
+        fallback = llm.ChatResponse(content=json.dumps(core, ensure_ascii=False), tool_calls=[],
+                                    usage={}, finish_reason="stop")
+        with mock.patch.object(llm_runner, "chat_completion", side_effect=[malformed, truncated, fallback]), \
+             mock.patch.dict(os.environ, {"TEST_API_KEY": "sk-ok"}):
+            result = investigator.run(self.view, action="initial")
+        self.assertTrue(result.investigation_updated, result.error_detail)
+        saved = read_investigation(self.case_dir / "investigation.json")
+        self.assertEqual(len(saved["hypotheses"]), 3)
+        self.assertIn("成本尚未评估", saved["hypotheses"][0]["risk"])
+        summary = json.loads((self.case_dir / "llm-last-run.json").read_text(encoding="utf-8"))
+        self.assertEqual(summary["status_note"], "完成（核心路径）")
 
     def test_unknown_action_rejected(self) -> None:
         investigator = self.investigator()
