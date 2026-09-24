@@ -272,22 +272,30 @@ def run_metrics_from_summary(summary: dict[str, Any], case_dir: str | Path, *, p
 
 # ------------------------------------------------------------------- Case 汇总
 def collect_case_metrics(case_dir: str | Path, *, pricing: dict[str, Any] | None = None) -> CaseMetrics:
-    """汇总一个 Case 到目前为止所有运行的指标（本地 JSON，不联网）。"""
+    """汇总一个 Case 到目前为止所有运行的指标（本地 JSON，不联网）。
+
+    同时读取 Codex CLI（codex-last-run.json / codex-runs/）与大模型引擎
+    （llm-last-run.json / llm-runs/）的记录，两者摘要字段同构。
+    """
     case_dir = Path(case_dir)
     case_id = case_dir.name
     metrics = CaseMetrics(case_id=case_id)
-    summary_file = case_dir / "codex-last-run.json"
-    if summary_file.is_file():
+    for summary_name in ("codex-last-run.json", "llm-last-run.json"):
+        summary_file = case_dir / summary_name
+        if not summary_file.is_file():
+            continue
         try:
             summary = json.loads(summary_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            summary = None
+            continue
         if isinstance(summary, dict):
             metrics.runs.append(run_metrics_from_summary(summary, case_dir, pricing=pricing))
-    # 其余历史运行：每个 JSONL 日志单独统计（不受 codex-last-run.json 覆盖影响）
+    # 其余历史运行：每个 JSONL 日志单独统计（不受 last-run 覆盖影响）
     covered = {run.log for run in metrics.runs}
-    runs_dir = case_dir / "codex-runs"
-    if runs_dir.is_dir():
+    for runs_dir_name in ("codex-runs", "llm-runs"):
+        runs_dir = case_dir / runs_dir_name
+        if not runs_dir.is_dir():
+            continue
         for log_path in sorted(runs_dir.glob("*.jsonl")):
             relative = log_path.relative_to(case_dir).as_posix()
             if relative in covered:
