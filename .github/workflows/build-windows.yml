@@ -1,0 +1,40 @@
+name: build-windows
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 固定测试集
+        run: python -m pytest -q
+      - name: 无头 GUI 冒烟（拖影/断层/滚动/缩放回归）
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb
+          xvfb-run -a python tools/gui_smoke.py
+
+  windows-installer:
+    needs: tests
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyinstaller
+      - run: pyinstaller --clean --noconfirm packaging/bugcompass.spec
+      - name: 上传 exe 目录（安装器需本地 Inno Setup 生成，见 packaging/README.md）
+        uses: actions/upload-artifact@v4
+        with:
+          name: BugCompass-windows-x64
+          path: dist/BugCompass/
