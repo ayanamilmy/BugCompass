@@ -1,3 +1,3 @@
 """BugCompass：本地 Bug 调查工作区工具。"""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .i18n import set_language, tr
 from . import __version__
 from .backup import BackupError, create_backup, inspect_backup, restore_backup
 from .codex_runner import CodexRunBusyError, CodexRunResult, CodexRunner
@@ -63,25 +64,25 @@ def codex_status_for_case(
 ) -> CodexStatusPresentation:
     """Return a case-scoped status so one run is never painted onto every case."""
     labels = {
-        "idle": f"● {engine_label} 空闲",
-        "working": f"● {engine_label} 工作中",
-        "stopping": f"● {engine_label} 正在停止",
-        "complete": f"● {engine_label} 已完成",
-        "failed": f"● {engine_label} 调查失败",
-        "stopped": f"● {engine_label} 已停止",
+        "idle": tr('● {} 空闲').format(engine_label),
+        "working": tr('● {} 工作中').format(engine_label),
+        "stopping": tr('● {} 正在停止').format(engine_label),
+        "complete": tr('● {} 已完成').format(engine_label),
+        "failed": tr('● {} 调查失败').format(engine_label),
+        "stopped": tr('● {} 已停止').format(engine_label),
     }
     if active_case_id and run_state in {"working", "stopping"}:
         if viewed_case_id == active_case_id:
             return CodexStatusPresentation(
                 run_state,
                 labels[run_state],
-                f"案件 {active_case_id}\n{run_detail}",
+                tr('案件 {}\n{}').format(active_case_id, run_detail),
                 run_state == "working",
             )
         return CodexStatusPresentation(
             "other",
-            "● 其他案件调查中",
-            f"Codex 正在处理 {active_case_id}。\n当前案件没有在运行。",
+            tr("● 其他案件调查中"),
+            tr('Codex 正在处理 {}。\n当前案件没有在运行。').format(active_case_id),
             False,
         )
 
@@ -94,11 +95,11 @@ def codex_status_for_case(
         )
 
     persisted = {
-        "complete": ("complete", "上一次 Codex 调查已经完成，可以继续补充调查。"),
-        "failed": ("failed", "上一次调查失败，案件内容仍然保留。"),
-        "cancelled": ("stopped", "上一次调查已停止，可以从当前 Case 继续。"),
-        "investigating": ("stopped", "没有检测到这个案件的 Codex 进程；上一次运行可能已中断。"),
-        "new": ("idle", "案件尚未开始或尚未产生调查结果。"),
+        "complete": ("complete", tr("上一次 Codex 调查已经完成，可以继续补充调查。")),
+        "failed": ("failed", tr("上一次调查失败，案件内容仍然保留。")),
+        "cancelled": ("stopped", tr("上一次调查已停止，可以从当前 Case 继续。")),
+        "investigating": ("stopped", tr("没有检测到这个案件的 Codex 进程；上一次运行可能已中断。")),
+        "new": ("idle", tr("案件尚未开始或尚未产生调查结果。")),
     }
     state, detail = persisted.get(viewed_status, (run_state, run_detail))
     return CodexStatusPresentation(state, labels.get(state, f"● Codex {state}"), detail, False)
@@ -109,10 +110,10 @@ def check_gui() -> tuple[bool, str]:
         import tkinter  # noqa: F401
         from tkinter import ttk  # noqa: F401
     except (ImportError, ModuleNotFoundError) as exc:
-        return False, f"Tkinter 不可用：{exc}"
+        return False, tr('Tkinter 不可用：{}').format(exc)
     if not CodexRunner.find_executable():
-        return True, "Tkinter 与报告 Bug 模式可用；源码调查需要 Codex CLI 或已配置的模型服务。"
-    return True, "Tkinter、报告 Bug 模式和 Codex CLI 均可用。"
+        return True, tr("Tkinter 与报告 Bug 模式可用；源码调查需要 Codex CLI 或已配置的模型服务。")
+    return True, tr("Tkinter、报告 Bug 模式和 Codex CLI 均可用。")
 
 
 def run_gui() -> int:
@@ -120,7 +121,7 @@ def run_gui() -> int:
         import tkinter as tk  # noqa: F401
         from tkinter import filedialog, messagebox, simpledialog, ttk
     except (ImportError, ModuleNotFoundError) as exc:
-        print(f"错误：Tkinter 不可用：{exc}")
+        print(tr('错误：Tkinter 不可用：{}').format(exc))
         return 2
 
     # 必须在创建任何 Tk 窗口之前声明 DPI aware，否则 Windows 会用位图拉伸
@@ -146,7 +147,10 @@ def run_gui() -> int:
 
         def __init__(self) -> None:
             super().__init__()
-            self.title(f"BugCompass — Blender Bug 助手 · v{__version__}")
+            # 语言要在第一个 tr()（窗口标题）之前就位。
+            self.settings = load_settings()
+            set_language(str(self.settings.get("language", "zh")))
+            self.title(tr('BugCompass — Blender Bug 助手 · v{}').format(__version__))
             self.geometry("1120x760")
             self.minsize(940, 650)
             self.configure(background=self.BACKGROUND)
@@ -173,20 +177,20 @@ def run_gui() -> int:
             # 工作线程 → 主线程的安全回调通道（测试连接等异步操作用）。
             self._main_queue: queue.SimpleQueue = queue.SimpleQueue()
             self.repo_var = tk.StringVar()
-            self.repo_status_var = tk.StringVar(value="请选择本地 Blender 源码文件夹。")
-            self.char_count_var = tk.StringVar(value="0 个字符")
+            self.repo_status_var = tk.StringVar(value=tr("请选择本地 Blender 源码文件夹。"))
+            self.char_count_var = tk.StringVar(value=tr("0 个字符"))
             self.progress_var = tk.StringVar()
             self.result_summary_var = tk.StringVar()
             self.result_hint_var = tk.StringVar()
             self.copy_status_var = tk.StringVar()
-            self.codex_status_var = tk.StringVar(value="● Codex 空闲")
-            self.codex_status_detail_var = tk.StringVar(value="当前没有正在运行的调查。")
+            self.codex_status_var = tk.StringVar(value=tr("● Codex 空闲"))
+            self.codex_status_detail_var = tk.StringVar(value=tr("当前没有正在运行的调查。"))
             self.details_visible = False
             self.busy = False
             self.codex_active = False
             self.active_case_id: str | None = None
             self.codex_state = "idle"
-            self.codex_state_detail = "当前没有正在运行的调查。"
+            self.codex_state_detail = tr("当前没有正在运行的调查。")
             self.current_case: CaseView | None = None
             self.current_reveal: PracticeReveal | None = None
             self.practice_cases: list[PracticeCase] = []
@@ -197,7 +201,7 @@ def run_gui() -> int:
             self.causal_graph: dict[str, Any] = {"nodes": [], "edges": []}
 
             # 设置 / 缩放 / 滚轮路由（Windows 滚动与拖影修复的一部分）。
-            self.settings = load_settings()
+            # （settings 已在 __init__ 开头加载，用于提前设置界面语言。）
             self.ui_scale = UiScale(self, tk)
             self.wheel_router = MouseWheelRouter(self)
             self._tk_module = tk
@@ -275,13 +279,13 @@ def run_gui() -> int:
             brand_text = ttk_module.Frame(brand, style="Sidebar.TFrame")
             brand_text.pack(side="left")
             ttk_module.Label(brand_text, text="BUGCOMPASS", style="Brand.TLabel").pack(anchor="w")
-            ttk_module.Label(brand_text, text="Blender Bug 助手", style="SidebarTitle.TLabel").pack(anchor="w")
-            ttk_module.Button(sidebar, text="＋  报告 Bug", command=self.show_report_page, style="Primary.TButton").pack(fill="x", pady=(0, 8))
-            ttk_module.Button(sidebar, text="◈  调查 Bug", command=self.show_new_page, style="Action.TButton").pack(fill="x", pady=(0, 8))
-            ttk_module.Button(sidebar, text="◫  历史 PR 练习", command=self.show_practice_page, style="Action.TButton").pack(fill="x", pady=(0, 8))
-            ttk_module.Button(sidebar, text="🔭  AI 挑选 Issue", command=self._open_issue_scout_dialog, style="Action.TButton").pack(fill="x", pady=(0, 28))
-            ttk_module.Label(sidebar, text="最近案件", style="SidebarTitle.TLabel", font=self._font("SF Pro Text", 11, "bold")).pack(anchor="w")
-            ttk_module.Label(sidebar, text="保存在本地 · 最多显示 10 个", style="SidebarHint.TLabel").pack(anchor="w", pady=(3, 12))
+            ttk_module.Label(brand_text, text=tr("Blender Bug 助手"), style="SidebarTitle.TLabel").pack(anchor="w")
+            ttk_module.Button(sidebar, text=tr("＋  报告 Bug"), command=self.show_report_page, style="Primary.TButton").pack(fill="x", pady=(0, 8))
+            ttk_module.Button(sidebar, text=tr("◈  调查 Bug"), command=self.show_new_page, style="Action.TButton").pack(fill="x", pady=(0, 8))
+            ttk_module.Button(sidebar, text=tr("◫  历史 PR 练习"), command=self.show_practice_page, style="Action.TButton").pack(fill="x", pady=(0, 8))
+            ttk_module.Button(sidebar, text=tr("🔭  AI 挑选 Issue"), command=self._open_issue_scout_dialog, style="Action.TButton").pack(fill="x", pady=(0, 28))
+            ttk_module.Label(sidebar, text=tr("最近案件"), style="SidebarTitle.TLabel", font=self._font("SF Pro Text", 11, "bold")).pack(anchor="w")
+            ttk_module.Label(sidebar, text=tr("保存在本地 · 最多显示 10 个"), style="SidebarHint.TLabel").pack(anchor="w", pady=(3, 12))
             self.recent_list = tk_module.Listbox(
                 sidebar,
                 borderwidth=0,
@@ -321,20 +325,20 @@ def run_gui() -> int:
             header = ttk_module.Frame(page, style="App.TFrame")
             header.grid(row=0, column=0, sticky="ew", pady=(0, 18))
             ttk_module.Label(header, text="REPORT A BUG", style="Eyebrow.TLabel").pack(anchor="w")
-            ttk_module.Label(header, text="报告 Blender Bug", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
-            ttk_module.Label(header, text="从发现问题到准备好官方报告。不需要 Blender 源码、终端或 AI。", style="PageSubtitle.TLabel", wraplength=740).pack(anchor="w")
+            ttk_module.Label(header, text=tr("报告 Blender Bug"), style="Title.TLabel").pack(anchor="w", pady=(4, 3))
+            ttk_module.Label(header, text=tr("从发现问题到准备好官方报告。不需要 Blender 源码、终端或 AI。"), style="PageSubtitle.TLabel", wraplength=740).pack(anchor="w")
 
-            intro = ttk_module.LabelFrame(page, text="开始", style="Dark.TLabelframe", padding=18)
+            intro = ttk_module.LabelFrame(page, text=tr("开始"), style="Dark.TLabelframe", padding=18)
             intro.grid(row=1, column=0, sticky="ew", pady=(0, 14))
-            ttk_module.Label(intro, text="填写亲自看到的现象，准备最小复现文件，核对后复制到 Blender 官方表单。", style="Body.TLabel", wraplength=710).pack(anchor="w")
-            ttk_module.Label(intro, text="适用于 Blender 程序本身。扩展和文档问题请先查看官方报告指南。", style="Muted.TLabel", wraplength=710).pack(anchor="w", pady=(5, 12))
+            ttk_module.Label(intro, text=tr("填写亲自看到的现象，准备最小复现文件，核对后复制到 Blender 官方表单。"), style="Body.TLabel", wraplength=710).pack(anchor="w")
+            ttk_module.Label(intro, text=tr("适用于 Blender 程序本身。扩展和文档问题请先查看官方报告指南。"), style="Muted.TLabel", wraplength=710).pack(anchor="w", pady=(5, 12))
             buttons = ttk_module.Frame(intro, style="Surface.TFrame")
             buttons.pack(anchor="w")
-            ttk_module.Button(buttons, text="新建 Bug 报告  →", command=self._new_standalone_report, style="Primary.TButton").pack(side="left")
-            self.import_case_button = ttk_module.Button(buttons, text="从当前调查导入", command=self._import_case_report, style="Action.TButton", state="disabled")
+            ttk_module.Button(buttons, text=tr("新建 Bug 报告  →"), command=self._new_standalone_report, style="Primary.TButton").pack(side="left")
+            self.import_case_button = ttk_module.Button(buttons, text=tr("从当前调查导入"), command=self._import_case_report, style="Action.TButton", state="disabled")
             self.import_case_button.pack(side="left", padx=(10, 0))
 
-            saved = ttk_module.LabelFrame(page, text="本地报告草稿", style="Dark.TLabelframe", padding=14)
+            saved = ttk_module.LabelFrame(page, text=tr("本地报告草稿"), style="Dark.TLabelframe", padding=14)
             saved.grid(row=2, column=0, sticky="nsew")
             saved.rowconfigure(0, weight=1)
             saved.columnconfigure(0, weight=1)
@@ -342,7 +346,7 @@ def run_gui() -> int:
                                                   selectbackground=self.BORDER, borderwidth=0, font=self._font("SF Pro Text", 11))
             self.report_list.grid(row=0, column=0, sticky="nsew")
             self.report_list.bind("<Double-Button-1>", self._open_selected_report)
-            ttk_module.Button(saved, text="继续编辑所选报告", command=self._open_selected_report, style="Action.TButton").grid(row=1, column=0, sticky="e", pady=(10, 0))
+            ttk_module.Button(saved, text=tr("继续编辑所选报告"), command=self._open_selected_report, style="Action.TButton").grid(row=1, column=0, sticky="e", pady=(10, 0))
 
         def _build_practice_page(self, tk_module: Any, ttk_module: Any) -> None:
             page = self.practice_page
@@ -352,15 +356,15 @@ def run_gui() -> int:
             header = ttk_module.Frame(page, style="App.TFrame")
             header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 16))
             ttk_module.Label(header, text="HISTORICAL PRACTICE", style="Eyebrow.TLabel").pack(anchor="w")
-            ttk_module.Label(header, text="历史 PR 练习场", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
-            ttk_module.Label(header, text="在不知道答案的前提下调查真实 Blender Bug，然后与真实修复对照。", style="PageSubtitle.TLabel").pack(anchor="w")
+            ttk_module.Label(header, text=tr("历史 PR 练习场"), style="Title.TLabel").pack(anchor="w", pady=(4, 3))
+            ttk_module.Label(header, text=tr("在不知道答案的前提下调查真实 Blender Bug，然后与真实修复对照。"), style="PageSubtitle.TLabel").pack(anchor="w")
 
             steps = ttk_module.Frame(page, style="App.TFrame")
             steps.grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 16))
-            for index, label in enumerate(("选择案例", "调查", "提交判断", "揭晓", "评分")):
+            for index, label in enumerate((tr("选择案例"), tr("调查"), tr("提交判断"), tr("揭晓"), tr("评分"))):
                 ttk_module.Label(steps, text=f"{index + 1}  {label}", style="StepActive.TLabel" if index == 0 else "Step.TLabel").pack(side="left", padx=(0, 7))
 
-            list_card = ttk_module.LabelFrame(page, text="案例库 · 10", style="Dark.TLabelframe", padding=12)
+            list_card = ttk_module.LabelFrame(page, text=tr("案例库 · 10"), style="Dark.TLabelframe", padding=12)
             list_card.grid(row=2, column=0, sticky="nsew", padx=(0, 12))
             list_card.rowconfigure(0, weight=1)
             list_card.columnconfigure(0, weight=1)
@@ -378,22 +382,22 @@ def run_gui() -> int:
             self.practice_list.grid(row=0, column=0, sticky="nsew")
             self.practice_list.bind("<<ListboxSelect>>", self._select_practice_case)
 
-            detail = ttk_module.LabelFrame(page, text="练习题面", style="Dark.TLabelframe", padding=20)
+            detail = ttk_module.LabelFrame(page, text=tr("练习题面"), style="Dark.TLabelframe", padding=20)
             detail.grid(row=2, column=1, sticky="nsew")
             detail.columnconfigure(0, weight=1)
             detail.rowconfigure(4, weight=1)
             self.practice_meta_var = tk_module.StringVar()
-            self.practice_title_var = tk_module.StringVar(value="选择左侧案例")
-            self.practice_symptom_var = tk_module.StringVar(value="这里会显示练习时允许看到的问题信息。")
+            self.practice_title_var = tk_module.StringVar(value=tr("选择左侧案例"))
+            self.practice_symptom_var = tk_module.StringVar(value=tr("这里会显示练习时允许看到的问题信息。"))
             self.practice_steps_var = tk_module.StringVar()
             self.practice_status_var = tk_module.StringVar()
             ttk_module.Label(detail, textvariable=self.practice_meta_var, style="Status.TLabel").grid(row=0, column=0, sticky="w")
             ttk_module.Label(detail, textvariable=self.practice_title_var, style="Heading.TLabel", font=self._font("SF Pro Display", 18, "bold"), wraplength=520, justify="left").grid(row=1, column=0, sticky="w", pady=(7, 8))
             ttk_module.Label(detail, textvariable=self.practice_symptom_var, style="Body.TLabel", wraplength=520, justify="left").grid(row=2, column=0, sticky="w")
-            ttk_module.Label(detail, text="复现轮廓", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).grid(row=3, column=0, sticky="w", pady=(18, 5))
+            ttk_module.Label(detail, text=tr("复现轮廓"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).grid(row=3, column=0, sticky="w", pady=(18, 5))
             ttk_module.Label(detail, textvariable=self.practice_steps_var, style="Body.TLabel", wraplength=520, justify="left").grid(row=4, column=0, sticky="nw")
             ttk_module.Label(detail, textvariable=self.practice_status_var, style="Status.TLabel").grid(row=5, column=0, sticky="w", pady=(12, 8))
-            self.practice_start_button = ttk_module.Button(detail, text="进入修复前版本并开始调查  →", command=self._start_practice, style="Primary.TButton", state="disabled")
+            self.practice_start_button = ttk_module.Button(detail, text=tr("进入修复前版本并开始调查  →"), command=self._start_practice, style="Primary.TButton", state="disabled")
             self.practice_start_button.grid(row=6, column=0, sticky="ew")
 
         def _build_new_page(self, tk_module: Any, ttk_module: Any) -> None:
@@ -403,28 +407,28 @@ def run_gui() -> int:
             header = ttk_module.Frame(page, style="App.TFrame")
             header.grid(row=0, column=0, sticky="ew", pady=(0, 18))
             ttk_module.Label(header, text="NEW INVESTIGATION", style="Eyebrow.TLabel").pack(anchor="w")
-            ttk_module.Label(header, text="开始一次新的调查", style="Title.TLabel").pack(anchor="w", pady=(4, 3))
-            ttk_module.Label(header, text="选择源码，粘贴问题。剩下的交给 BugCompass。", style="PageSubtitle.TLabel").pack(anchor="w")
+            ttk_module.Label(header, text=tr("开始一次新的调查"), style="Title.TLabel").pack(anchor="w", pady=(4, 3))
+            ttk_module.Label(header, text=tr("选择源码，粘贴问题。剩下的交给 BugCompass。"), style="PageSubtitle.TLabel").pack(anchor="w")
 
             steps = ttk_module.Frame(page, style="App.TFrame")
             steps.grid(row=1, column=0, sticky="w", pady=(0, 18))
-            for index, label in enumerate(("1  选择源码", "2  描述问题", "3  开始调查")):
+            for index, label in enumerate((tr("1  选择源码"), tr("2  描述问题"), tr("3  开始调查"))):
                 ttk_module.Label(steps, text=label, style="StepActive.TLabel" if index == 0 else "Step.TLabel").pack(side="left", padx=(0, 8))
 
-            repo_card = ttk_module.LabelFrame(page, text="01  /  BLENDER 源码", style="Dark.TLabelframe", padding=20)
+            repo_card = ttk_module.LabelFrame(page, text=tr("01  /  BLENDER 源码"), style="Dark.TLabelframe", padding=20)
             repo_card.grid(row=2, column=0, sticky="ew", pady=(0, 14))
             repo_card.columnconfigure(0, weight=1)
-            ttk_module.Label(repo_card, text="本地源码仓库", style="Heading.TLabel").grid(row=0, column=0, sticky="w")
-            ttk_module.Label(repo_card, text="只会读取源码和 Git 信息，创建案件时不会修改 Blender。", style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 0))
+            ttk_module.Label(repo_card, text=tr("本地源码仓库"), style="Heading.TLabel").grid(row=0, column=0, sticky="w")
+            ttk_module.Label(repo_card, text=tr("只会读取源码和 Git 信息，创建案件时不会修改 Blender。"), style="Muted.TLabel").grid(row=1, column=0, sticky="w", pady=(3, 0))
             path_row = ttk_module.Frame(repo_card, style="Card.TFrame")
             path_row.grid(row=2, column=0, sticky="ew", pady=(13, 8))
             path_row.columnconfigure(0, weight=1)
             ttk_module.Entry(path_row, textvariable=self.repo_var, state="readonly", style="Dark.TEntry").grid(row=0, column=0, sticky="ew", padx=(0, 10), ipady=3)
-            ttk_module.Button(path_row, text="选择源码文件夹", command=self._choose_repo, style="Action.TButton").grid(row=0, column=1)
+            ttk_module.Button(path_row, text=tr("选择源码文件夹"), command=self._choose_repo, style="Action.TButton").grid(row=0, column=1)
             self.repo_status_label = ttk_module.Label(repo_card, textvariable=self.repo_status_var, style="Muted.TLabel")
             self.repo_status_label.grid(row=3, column=0, sticky="w")
 
-            bug_card = ttk_module.LabelFrame(page, text="02  /  BUG 描述", style="Dark.TLabelframe", padding=20)
+            bug_card = ttk_module.LabelFrame(page, text=tr("02  /  BUG 描述"), style="Dark.TLabelframe", padding=20)
             bug_card.grid(row=3, column=0, sticky="nsew", pady=(0, 14))
             bug_card.columnconfigure(0, weight=1)
             bug_card.rowconfigure(1, weight=1)
@@ -433,9 +437,9 @@ def run_gui() -> int:
             title_row.columnconfigure(0, weight=1)
             title_text = ttk_module.Frame(title_row, style="Card.TFrame")
             title_text.grid(row=0, column=0, sticky="w")
-            ttk_module.Label(title_text, text="把问题原样贴进来", style="Heading.TLabel").pack(anchor="w")
-            ttk_module.Label(title_text, text="标题、复现步骤、日志都可以。这里的内容不会被当成命令执行。", style="Muted.TLabel").pack(anchor="w", pady=(3, 0))
-            ttk_module.Button(title_row, text="↑  导入 .md / .txt", command=self._import_issue, style="Ghost.TButton").grid(row=0, column=1)
+            ttk_module.Label(title_text, text=tr("把问题原样贴进来"), style="Heading.TLabel").pack(anchor="w")
+            ttk_module.Label(title_text, text=tr("标题、复现步骤、日志都可以。这里的内容不会被当成命令执行。"), style="Muted.TLabel").pack(anchor="w", pady=(3, 0))
+            ttk_module.Button(title_row, text=tr("↑  导入 .md / .txt"), command=self._import_issue, style="Ghost.TButton").grid(row=0, column=1)
             self.bug_text = tk_module.Text(
                 bug_card,
                 wrap="word",
@@ -459,7 +463,7 @@ def run_gui() -> int:
 
             engine_row = ttk_module.Frame(page, style="App.TFrame")
             engine_row.grid(row=4, column=0, sticky="ew", pady=(0, 12))
-            ttk_module.Label(engine_row, text="调查引擎", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(0, 8))
+            ttk_module.Label(engine_row, text=tr("调查引擎"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(0, 8))
             self.engine_combo = ttk_module.Combobox(
                 engine_row,
                 textvariable=self.engine_var,
@@ -469,14 +473,14 @@ def run_gui() -> int:
             )
             self.engine_combo.pack(side="left")
             self.engine_combo.bind("<<ComboboxSelected>>", self._on_engine_changed)
-            ttk_module.Label(engine_row, text="默认 Codex CLI；大模型 API 可在设置里配置与测试", style="Muted.TLabel").pack(side="left", padx=(10, 0))
+            ttk_module.Label(engine_row, text=tr("默认 Codex CLI；大模型 API 可在设置里配置与测试"), style="Muted.TLabel").pack(side="left", padx=(10, 0))
 
             action_row = ttk_module.Frame(page, style="App.TFrame")
             action_row.grid(row=5, column=0, sticky="ew")
             action_row.columnconfigure(0, weight=1)
             self.progress_label = ttk_module.Label(action_row, textvariable=self.progress_var, style="PageStatus.TLabel")
             self.progress_label.grid(row=0, column=0, sticky="w")
-            self.create_button = ttk_module.Button(action_row, text="开始调查  →", command=self._start_create, style="Primary.TButton")
+            self.create_button = ttk_module.Button(action_row, text=tr("开始调查  →"), command=self._start_create, style="Primary.TButton")
             self.create_button.grid(row=0, column=1, sticky="e")
 
         def _build_result_page(self, tk_module: Any, ttk_module: Any) -> None:
@@ -486,13 +490,13 @@ def run_gui() -> int:
             header = ttk_module.Frame(page, style="App.TFrame")
             header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
             ttk_module.Label(header, text="INVESTIGATION WORKSPACE", style="Eyebrow.TLabel").pack(anchor="w")
-            ttk_module.Label(header, text="调查工作台", style="Title.TLabel").pack(anchor="w", pady=(4, 8))
+            ttk_module.Label(header, text=tr("调查工作台"), style="Title.TLabel").pack(anchor="w", pady=(4, 8))
             flow = ttk_module.Frame(header, style="App.TFrame")
             flow.pack(anchor="w")
-            for index, label in enumerate(("Bug 描述", "调查中", "三条路径", "实验", "结论")):
+            for index, label in enumerate((tr("Bug 描述"), tr("调查中"), tr("三条路径"), tr("实验"), tr("结论"))):
                 ttk_module.Label(flow, text=f"{index + 1}  {label}", style="StepActive.TLabel" if index == 2 else "Step.TLabel").pack(side="left", padx=(0, 7))
 
-            summary_card = ttk_module.LabelFrame(page, text="案件概览", style="Dark.TLabelframe", padding=16)
+            summary_card = ttk_module.LabelFrame(page, text=tr("案件概览"), style="Dark.TLabelframe", padding=16)
             summary_card.grid(row=1, column=0, sticky="ew", pady=(0, 10))
             summary_card.columnconfigure(0, weight=1)
             summary_card.columnconfigure(1, minsize=210)
@@ -503,29 +507,29 @@ def run_gui() -> int:
             self.codex_status_label.pack(anchor="w")
             ttk_module.Label(codex_panel, textvariable=self.codex_status_detail_var, background=self.SURFACE_ALT, foreground=self.MUTED, font=self._font("SF Pro Text", 9), wraplength=190, justify="left").pack(anchor="w", pady=(4, 0))
             ttk_module.Label(summary_card, textvariable=self.result_hint_var, style="Status.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
-            self.details_button = ttk_module.Button(summary_card, text="查看环境详情", command=self._toggle_details, style="Ghost.TButton")
+            self.details_button = ttk_module.Button(summary_card, text=tr("查看环境详情"), command=self._toggle_details, style="Ghost.TButton")
             self.details_button.grid(row=2, column=0, sticky="w", pady=(8, 0))
-            ttk_module.Button(summary_card, text="整理可复现报告包…", command=self._open_repro_report_dialog, style="Action.TButton").grid(row=2, column=1, sticky="e", pady=(8, 0))
+            ttk_module.Button(summary_card, text=tr("整理可复现报告包…"), command=self._open_repro_report_dialog, style="Action.TButton").grid(row=2, column=1, sticky="e", pady=(8, 0))
             self.details_frame = ttk_module.Frame(summary_card, style="Card.TFrame")
             self.details_text = tk_module.Text(self.details_frame, height=7, wrap="none", font=self._font("SF Mono", 9), relief="flat", borderwidth=0, background=self.SURFACE_ALT, foreground=self.MUTED, padx=10, pady=10)
             self.details_text.pack(fill="both", expand=True, pady=(6, 0))
 
             actions = ttk_module.Frame(page, style="App.TFrame")
             actions.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-            self.copy_button = ttk_module.Button(actions, text="复制调查指令（备用）", command=self._copy_instruction, style="Action.TButton")
+            self.copy_button = ttk_module.Button(actions, text=tr("复制调查指令（备用）"), command=self._copy_instruction, style="Action.TButton")
             self.copy_button.pack(side="left")
-            ttk_module.Button(actions, text="刷新结果", command=self._refresh_current_case, style="Action.TButton").pack(side="left", padx=10)
-            ttk_module.Button(actions, text="新建另一个调查", command=self._new_another, style="Action.TButton").pack(side="left")
-            self.continue_button = ttk_module.Button(actions, text="继续调查  ▶", command=self._continue_investigation, style="Primary.TButton", state="disabled")
+            ttk_module.Button(actions, text=tr("刷新结果"), command=self._refresh_current_case, style="Action.TButton").pack(side="left", padx=10)
+            ttk_module.Button(actions, text=tr("新建另一个调查"), command=self._new_another, style="Action.TButton").pack(side="left")
+            self.continue_button = ttk_module.Button(actions, text=tr("继续调查  ▶"), command=self._continue_investigation, style="Primary.TButton", state="disabled")
             self.continue_button.pack(side="left", padx=(10, 0))
-            self.cancel_button = ttk_module.Button(actions, text="停止 Codex  ■", command=self._cancel_investigation, style="Action.TButton", state="disabled")
+            self.cancel_button = ttk_module.Button(actions, text=tr("停止 Codex  ■"), command=self._cancel_investigation, style="Action.TButton", state="disabled")
             self.cancel_button.pack(side="left", padx=(8, 0))
-            ttk_module.Button(actions, text="备份", command=self._backup_workspace, style="Action.TButton").pack(side="left", padx=(8, 0))
-            ttk_module.Button(actions, text="恢复备份…", command=self._restore_backup_dialog, style="Action.TButton").pack(side="left", padx=(8, 0))
-            ttk_module.Button(actions, text="导出诊断包", command=self._export_diagnostics, style="Action.TButton").pack(side="left", padx=(8, 0))
-            ttk_module.Button(actions, text="⚙ 设置", command=self._open_settings, style="Ghost.TButton").pack(side="left", padx=(8, 0))
-            self.submit_judgment_button = ttk_module.Button(actions, text="提交根因判断", command=self._open_judgment_dialog, style="Primary.TButton")
-            self.reveal_button = ttk_module.Button(actions, text="揭晓真实修复", command=self._reveal_practice, style="Action.TButton")
+            ttk_module.Button(actions, text=tr("备份"), command=self._backup_workspace, style="Action.TButton").pack(side="left", padx=(8, 0))
+            ttk_module.Button(actions, text=tr("恢复备份…"), command=self._restore_backup_dialog, style="Action.TButton").pack(side="left", padx=(8, 0))
+            ttk_module.Button(actions, text=tr("导出诊断包"), command=self._export_diagnostics, style="Action.TButton").pack(side="left", padx=(8, 0))
+            ttk_module.Button(actions, text=tr("⚙ 设置"), command=self._open_settings, style="Ghost.TButton").pack(side="left", padx=(8, 0))
+            self.submit_judgment_button = ttk_module.Button(actions, text=tr("提交根因判断"), command=self._open_judgment_dialog, style="Primary.TButton")
+            self.reveal_button = ttk_module.Button(actions, text=tr("揭晓真实修复"), command=self._reveal_practice, style="Action.TButton")
             ttk_module.Label(actions, textvariable=self.copy_status_var, style="PageStatus.TLabel").pack(side="left", padx=12)
 
             timeline_row = ttk_module.Frame(page, style="App.TFrame")
@@ -552,7 +556,7 @@ def run_gui() -> int:
             self.new_page.tkraise()
             self.copy_status_var.set("")
             if not CodexRunner.find_executable() and self.settings.get("active_engine") == "codex":
-                self.progress_var.set("源码调查需要先安装并登录 Codex，或在设置中选择已配置的模型服务。")
+                self.progress_var.set(tr("源码调查需要先安装并登录 Codex，或在设置中选择已配置的模型服务。"))
 
         def show_report_page(self) -> None:
             self._refresh_report_list()
@@ -564,22 +568,22 @@ def run_gui() -> int:
             self.saved_reports = self.report_store.list_reports()
             self.report_list.delete(0, "end")
             for item in self.saved_reports:
-                status = "材料待补" if not item.ready_for_review else "待人工核对"
+                status = tr("材料待补") if not item.ready_for_review else tr("待人工核对")
                 self.report_list.insert("end", f"{item.title}  ·  {status}  ·  {item.report_id}")
             if not self.saved_reports:
-                self.report_list.insert("end", "还没有报告草稿；点击上方新建。")
+                self.report_list.insert("end", tr("还没有报告草稿；点击上方新建。"))
 
         def _open_report(self, report_id: str) -> None:
             try:
                 open_report_editor(self, self.report_store, report_id, on_saved=self._refresh_report_list)
             except (BugCompassError, OSError) as exc:
-                self.message_box.showerror("无法打开报告", str(exc), parent=self)
+                self.message_box.showerror(tr("无法打开报告"), str(exc), parent=self)
 
         def _new_standalone_report(self) -> None:
             try:
                 report_id = self.report_store.create()
             except (BugCompassError, OSError) as exc:
-                self.message_box.showerror("无法新建报告", str(exc), parent=self)
+                self.message_box.showerror(tr("无法新建报告"), str(exc), parent=self)
                 return
             self._refresh_report_list()
             self._open_report(report_id)
@@ -590,10 +594,10 @@ def run_gui() -> int:
             try:
                 report_id = self.report_store.create(from_case=self.current_case.case_dir)
             except (BugCompassError, OSError) as exc:
-                self.message_box.showerror("无法导入调查", str(exc), parent=self)
+                self.message_box.showerror(tr("无法导入调查"), str(exc), parent=self)
                 return
             self._refresh_report_list()
-            self.message_box.showinfo("调查内容已导入", "请逐项核对事实和附件；调查摘要不能替代亲自复现。", parent=self)
+            self.message_box.showinfo(tr("调查内容已导入"), tr("请逐项核对事实和附件；调查摘要不能替代亲自复现。"), parent=self)
             self._open_report(report_id)
 
         def _open_selected_report(self, _event: Any = None) -> None:
@@ -604,20 +608,20 @@ def run_gui() -> int:
 
         def show_practice_page(self) -> None:
             if self.busy:
-                self.message_box.showwarning("任务仍在进行", "请先等待当前任务完成，或在正在运行的案件中点击“停止 Codex”。", parent=self)
+                self.message_box.showwarning(tr("任务仍在进行"), tr("请先等待当前任务完成，或在正在运行的案件中点击“停止 Codex”。"), parent=self)
                 return
             try:
                 self.practice_cases = self.practice_manager.list_cases()
             except BugCompassError as exc:
-                self.message_box.showerror("无法读取练习案例", str(exc), parent=self)
+                self.message_box.showerror(tr("无法读取练习案例"), str(exc), parent=self)
                 return
             self.practice_list.delete(0, "end")
-            difficulty = {"easy": "入门", "medium": "进阶", "hard": "挑战"}
+            difficulty = {"easy": tr("入门"), "medium": tr("进阶"), "hard": tr("挑战")}
             for index, case in enumerate(self.practice_cases, 1):
                 self.practice_list.insert("end", f"{index:02d}   #{case.issue_id}  {difficulty.get(case.difficulty, case.difficulty)}\n      {case.title}")
-            self.practice_title_var.set("选择左侧案例")
-            self.practice_meta_var.set("10 个真实修复 · 答案已隐藏")
-            self.practice_symptom_var.set("选择一个案例，BugCompass 会创建隔离源码副本并切换到修复前版本。")
+            self.practice_title_var.set(tr("选择左侧案例"))
+            self.practice_meta_var.set(tr("10 个真实修复 · 答案已隐藏"))
+            self.practice_symptom_var.set(tr("选择一个案例，BugCompass 会创建隔离源码副本并切换到修复前版本。"))
             self.practice_steps_var.set("")
             self.practice_status_var.set("")
             self.practice_start_button.configure(state="disabled")
@@ -631,14 +635,14 @@ def run_gui() -> int:
             if index >= len(self.practice_cases):
                 return
             case = self.practice_cases[index]
-            difficulty = {"easy": "入门", "medium": "进阶", "hard": "挑战"}
+            difficulty = {"easy": tr("入门"), "medium": tr("进阶"), "hard": tr("挑战")}
             self.practice_meta_var.set(
-                f"#{case.issue_id}  ·  {difficulty.get(case.difficulty, case.difficulty)}  ·  建议 {case.suggested_minutes} 分钟  ·  {case.suggested_ai_runs} 次 AI"
+                tr('#{}  ·  {}  ·  建议 {} 分钟  ·  {} 次 AI').format(case.issue_id, difficulty.get(case.difficulty, case.difficulty), case.suggested_minutes, case.suggested_ai_runs)
             )
             self.practice_title_var.set(case.title)
             self.practice_symptom_var.set(case.symptom)
             self.practice_steps_var.set("\n".join(f"{i}.  {step}" for i, step in enumerate(case.reproduction, 1)))
-            self.practice_status_var.set(f"修复前 commit  {case.pre_fix_commit[:12]}  ·  真实修复保持隐藏")
+            self.practice_status_var.set(tr('修复前 commit  {}  ·  真实修复保持隐藏').format(case.pre_fix_commit[:12]))
             self.practice_start_button.configure(state="normal")
 
         def _start_practice(self) -> None:
@@ -650,18 +654,18 @@ def run_gui() -> int:
             case = self.practice_cases[int(selection[0])]
             repo_to_initialize: str | None = None
             if not (self.controller.workspace_path / "project.json").is_file():
-                selected = self.file_dialog.askdirectory(title="选择 Blender 源码文件夹", mustexist=True)
+                selected = self.file_dialog.askdirectory(title=tr("选择 Blender 源码文件夹"), mustexist=True)
                 if not selected:
                     return
                 validation = self.controller.validate_repository(selected)
                 if not validation.valid:
-                    self.message_box.showerror("Blender 源码无效", validation.message, parent=self)
+                    self.message_box.showerror(tr("Blender 源码无效"), validation.message, parent=self)
                     return
                 repo_to_initialize = str(validation.repo_path)
                 self.repo_var.set(repo_to_initialize)
             self.busy = True
             self.practice_start_button.configure(state="disabled")
-            self.practice_status_var.set("正在准备修复前源码副本……")
+            self.practice_status_var.set(tr("正在准备修复前源码副本……"))
             self.codex_runner.reset_cancellation()
 
             def worker() -> None:
@@ -693,14 +697,14 @@ def run_gui() -> int:
                             self.controller.set_case_status(view.case_id, "failed")
                         except BugCompassError:
                             pass
-                    message = str(exc) if isinstance(exc, (BugCompassError, OSError)) else "创建历史练习时发生意外错误。"
+                    message = str(exc) if isinstance(exc, (BugCompassError, OSError)) else tr("创建历史练习时发生意外错误。")
                     self.events.put(("error", (view.case_id if view else None, message)))
 
             threading.Thread(target=worker, daemon=False).start()
             self.after(100, self._poll_events)
 
         def _choose_repo(self) -> None:
-            selected = self.file_dialog.askdirectory(title="选择 Blender 源码文件夹", mustexist=True)
+            selected = self.file_dialog.askdirectory(title=tr("选择 Blender 源码文件夹"), mustexist=True)
             if not selected:
                 return
             validation = self.controller.validate_repository(selected)
@@ -710,15 +714,15 @@ def run_gui() -> int:
 
         def _import_issue(self) -> None:
             selected = self.file_dialog.askopenfilename(
-                title="导入 Bug 描述",
-                filetypes=(("Markdown 或文本文件", "*.md *.txt"), ("Markdown 文件", "*.md"), ("文本文件", "*.txt")),
+                title=tr("导入 Bug 描述"),
+                filetypes=((tr("Markdown 或文本文件"), "*.md *.txt"), (tr("Markdown 文件"), "*.md"), (tr("文本文件"), "*.txt")),
             )
             if not selected:
                 return
             try:
                 content = Path(selected).read_text(encoding="utf-8")
             except (OSError, UnicodeError) as exc:
-                self.message_box.showerror("无法导入文件", f"无法读取所选文件：\n{exc}", parent=self)
+                self.message_box.showerror(tr("无法导入文件"), tr('无法读取所选文件：\n{}').format(exc), parent=self)
                 return
             self.bug_text.delete("1.0", "end")
             self.bug_text.insert("1.0", content)
@@ -731,7 +735,7 @@ def run_gui() -> int:
 
         def _set_char_count(self) -> None:
             count = len(self.bug_text.get("1.0", "end-1c"))
-            self.char_count_var.set(f"{count} 个字符")
+            self.char_count_var.set(tr('{} 个字符').format(count))
 
         def _start_create(self) -> None:
             if self.busy:
@@ -739,14 +743,14 @@ def run_gui() -> int:
             repo = self.repo_var.get().strip()
             bug_text = self.bug_text.get("1.0", "end-1c")
             if not repo:
-                self.message_box.showwarning("请选择源码", "请先选择本地 Blender 源码文件夹。", parent=self)
+                self.message_box.showwarning(tr("请选择源码"), tr("请先选择本地 Blender 源码文件夹。"), parent=self)
                 return
             if not bug_text.strip():
-                self.message_box.showwarning("请填写 Bug 描述", "Bug 描述不能为空。", parent=self)
+                self.message_box.showwarning(tr("请填写 Bug 描述"), tr("Bug 描述不能为空。"), parent=self)
                 return
             validation = self.controller.validate_repository(repo)
             if not validation.valid:
-                self.message_box.showerror("Blender 源码无效", validation.message, parent=self)
+                self.message_box.showerror(tr("Blender 源码无效"), validation.message, parent=self)
                 return
 
             self.busy = True
@@ -754,7 +758,7 @@ def run_gui() -> int:
             self._active_runner = runner
             runner.reset_cancellation()
             self.create_button.configure(state="disabled")
-            self.progress_var.set("正在创建案件并准备调查引擎……")
+            self.progress_var.set(tr("正在创建案件并准备调查引擎……"))
 
             def worker() -> None:
                 view: CaseView | None = None
@@ -780,7 +784,7 @@ def run_gui() -> int:
                             self.controller.set_case_status(view.case_id, "failed")
                         except BugCompassError:
                             pass
-                    message = str(exc) if isinstance(exc, (BugCompassError, OSError)) else "创建案件时发生意外错误。"
+                    message = str(exc) if isinstance(exc, (BugCompassError, OSError)) else tr("创建案件时发生意外错误。")
                     self.events.put(("error", (view.case_id if view else None, message)))
 
             threading.Thread(target=worker, daemon=False).start()
@@ -801,8 +805,8 @@ def run_gui() -> int:
                     self.active_case_id = payload.case_id
                     self.current_case = payload
                     self._show_case(payload)
-                    self._set_codex_state("working", "正在读取案件和 Blender 源码。")
-                    self.result_hint_var.set("案件已创建，Codex 正在自动调查……")
+                    self._set_codex_state("working", tr("正在读取案件和 Blender 源码。"))
+                    self.result_hint_var.set(tr("案件已创建，Codex 正在自动调查……"))
                     self._refresh_recent_cases()
                 elif kind == "practice_created":
                     self.codex_active = True
@@ -810,8 +814,8 @@ def run_gui() -> int:
                     self.current_case = payload
                     self.current_reveal = None
                     self._show_case(payload)
-                    self._set_codex_state("working", "正在调查修复前版本，答案仍隐藏。")
-                    self.result_hint_var.set("历史练习已开始：当前是修复前源码，真实答案保持隐藏。")
+                    self._set_codex_state("working", tr("正在调查修复前版本，答案仍隐藏。"))
+                    self.result_hint_var.set(tr("历史练习已开始：当前是修复前源码，真实答案保持隐藏。"))
                     self._refresh_recent_cases()
                 elif kind == "codex_progress":
                     case_id, message = payload
@@ -825,7 +829,7 @@ def run_gui() -> int:
                     self.busy = False
                     if self.current_case is not None and self.current_case.case_id == view.case_id:
                         self._add_timeline(
-                            f"实验 {experiment_id} 执行完成（返回码 {record['return_code']}），正在请 Codex 更新假设。"
+                            tr('实验 {} 执行完成（返回码 {}），正在请 Codex 更新假设。').format(experiment_id, record['return_code'])
                         )
                     self._run_followup("experiment", experiment_id, case_id=view.case_id)
                 elif kind == "success":
@@ -839,10 +843,10 @@ def run_gui() -> int:
                     self.progress_var.set("")
                     if self.current_case is not None and self.current_case.case_id == finished_case_id:
                         self._show_case(payload)
-                        self.result_hint_var.set("Codex 调查完成，结果已自动刷新。")
+                        self.result_hint_var.set(tr("Codex 调查完成，结果已自动刷新。"))
                     elif self.current_case is not None:
                         self._show_case(self.controller.load_case(self.current_case.case_id))
-                        self.copy_status_var.set(f"案件 {finished_case_id} 的调查已完成。")
+                        self.copy_status_var.set(tr('案件 {} 的调查已完成。').format(finished_case_id))
                     self._refresh_recent_cases()
                 elif kind == "cancelled":
                     finished_case_id = payload.case_id
@@ -855,10 +859,10 @@ def run_gui() -> int:
                     self.progress_var.set("")
                     if self.current_case is not None and self.current_case.case_id == finished_case_id:
                         self._show_case(payload)
-                        self.result_hint_var.set("调查已取消；案件内容已保留，可以稍后重试。")
+                        self.result_hint_var.set(tr("调查已取消；案件内容已保留，可以稍后重试。"))
                     elif self.current_case is not None:
                         self._show_case(self.controller.load_case(self.current_case.case_id))
-                        self.copy_status_var.set(f"案件 {finished_case_id} 的调查已停止。")
+                        self.copy_status_var.set(tr('案件 {} 的调查已停止。').format(finished_case_id))
                     self._refresh_recent_cases()
                 elif kind == "error":
                     failed_case_id, message = payload
@@ -874,13 +878,13 @@ def run_gui() -> int:
                         try:
                             self._show_case(self.controller.load_case(self.current_case.case_id))
                             if self.current_case.case_id == failed_case_id:
-                                self.result_hint_var.set("Codex 调查未完成；案件已经保存在本地。")
+                                self.result_hint_var.set(tr("Codex 调查未完成；案件已经保存在本地。"))
                             elif failed_case_id:
-                                self.copy_status_var.set(f"案件 {failed_case_id} 的操作失败。")
+                                self.copy_status_var.set(tr('案件 {} 的操作失败。').format(failed_case_id))
                         except BugCompassError:
                             pass
                     self._refresh_recent_cases()
-                    self.message_box.showerror("操作未完成", str(message), parent=self)
+                    self.message_box.showerror(tr("操作未完成"), str(message), parent=self)
             if self.busy:
                 self.after(100, self._poll_events)
 
@@ -901,7 +905,7 @@ def run_gui() -> int:
             refreshed = self.controller.load_case(view.case_id)
             if not result.investigation_updated or refreshed.awaiting_investigation:
                 self.controller.set_case_status(view.case_id, "failed")
-                self.events.put(("error", (view.case_id, "Codex 已结束，但没有写入调查结果。案件已保留，请检查 Codex 登录状态后重试。")))
+                self.events.put(("error", (view.case_id, tr("Codex 已结束，但没有写入调查结果。案件已保留，请检查 Codex 登录状态后重试。"))))
                 return
             self.controller.set_case_status(view.case_id, "complete")
             self.events.put(("success", self.controller.load_case(view.case_id)))
@@ -909,23 +913,22 @@ def run_gui() -> int:
         def _friendly_codex_error(self, result: CodexRunResult) -> str:
             if getattr(result, "engine", "") == "llm":
                 # 大模型引擎的错误信息在生成时已是用户友好的中文指引。
-                return result.error_detail or "大模型调查未完成。"
+                return result.error_detail or tr("大模型调查未完成。")
             detail = result.error_detail.lower()
             error_message = self.codex_runner.extract_error_message(result.error_detail)
             if result.timed_out:
                 return (
-                    f"Codex 在 {int(self.codex_runner.timeout_seconds)} 秒内没有完成，BugCompass 已自动停止它，避免继续消耗额度。"
-                    "案件和已收集内容都已保留，可以稍后继续。"
+                    tr('Codex 在 {} 秒内没有完成，BugCompass 已自动停止它，避免继续消耗额度。案件和已收集内容都已保留，可以稍后继续。').format(int(self.codex_runner.timeout_seconds))
                 )
             if "invalid_json_schema" in detail:
-                return "BugCompass 的结构化输出格式不兼容，Codex 尚未开始实际调查。案件已经保存在本地，修复格式后可点击“继续调查”。"
+                return tr("BugCompass 的结构化输出格式不兼容，Codex 尚未开始实际调查。案件已经保存在本地，修复格式后可点击“继续调查”。")
             if any(word in detail for word in ("login", "auth", "unauthorized", "credential")):
-                return "Codex 尚未登录或登录已失效。请先在终端完成 Codex 登录，然后重试；案件已经保存在本地。"
+                return tr("Codex 尚未登录或登录已失效。请先在终端完成 Codex 登录，然后重试；案件已经保存在本地。")
             if any(word in detail for word in ("network", "connect", "dns", "timed out")):
-                return "Codex 暂时无法连接服务。请检查网络后重试；案件已经保存在本地。"
+                return tr("Codex 暂时无法连接服务。请检查网络后重试；案件已经保存在本地。")
             if error_message:
-                return f"Codex 返回错误：{error_message[:500]}\n详细记录已保存到 Case 的 codex-last-run.json。"
-            return f"Codex 调查未完成（退出码 {result.returncode}）。案件已经保存在本地，可以使用备用复制按钮继续。"
+                return tr('Codex 返回错误：{}\n详细记录已保存到 Case 的 codex-last-run.json。').format(error_message[:500])
+            return tr('Codex 调查未完成（退出码 {}）。案件已经保存在本地，可以使用备用复制按钮继续。').format(result.returncode)
 
         def _cancel_investigation(self) -> None:
             if (
@@ -935,8 +938,8 @@ def run_gui() -> int:
                 or self.current_case.case_id != self.active_case_id
             ):
                 return
-            self.result_hint_var.set("正在取消当前调查……")
-            self._set_codex_state("stopping", "正在安全终止当前调查进程。")
+            self.result_hint_var.set(tr("正在取消当前调查……"))
+            self._set_codex_state("stopping", tr("正在安全终止当前调查进程。"))
             runner = self._active_runner or self._engine_runner()
             runner.cancel()
 
@@ -947,7 +950,7 @@ def run_gui() -> int:
                 view = self.controller.load_case(self.current_case.case_id)
                 self.controller.set_case_status(view.case_id, "investigating")
             except BugCompassError as exc:
-                self.message_box.showerror("无法继续调查", str(exc), parent=self)
+                self.message_box.showerror(tr("无法继续调查"), str(exc), parent=self)
                 return
             self.current_case = view
             self.busy = True
@@ -957,9 +960,9 @@ def run_gui() -> int:
             self._active_runner = runner
             runner.reset_cancellation()
             self._refresh_recent_cases()
-            self._set_codex_state("working", "正在继续同一个案件，不会重新创建 Case。")
-            self.result_hint_var.set("正在继续调查当前案件……")
-            self._add_timeline("已继续当前案件，保留原有证据、预测和用户编辑。")
+            self._set_codex_state("working", tr("正在继续同一个案件，不会重新创建 Case。"))
+            self.result_hint_var.set(tr("正在继续调查当前案件……"))
+            self._add_timeline(tr("已继续当前案件，保留原有证据、预测和用户编辑。"))
 
             def worker() -> None:
                 try:
@@ -978,7 +981,7 @@ def run_gui() -> int:
                         self.controller.set_case_status(view.case_id, "failed")
                     except BugCompassError:
                         pass
-                    message = str(exc) if isinstance(exc, (BugCompassError, OSError)) else "继续调查时发生意外错误。"
+                    message = str(exc) if isinstance(exc, (BugCompassError, OSError)) else tr("继续调查时发生意外错误。")
                     self.events.put(("error", (view.case_id, message)))
 
             threading.Thread(target=worker, daemon=False).start()
@@ -1020,8 +1023,8 @@ def run_gui() -> int:
         def _on_close(self) -> None:
             if self.codex_active:
                 should_close = self.message_box.askyesno(
-                    "调查仍在进行",
-                    "关闭窗口会取消当前 Codex 调查。确定要关闭吗？",
+                    tr("调查仍在进行"),
+                    tr("关闭窗口会取消当前 Codex 调查。确定要关闭吗？"),
                     parent=self,
                 )
                 if not should_close:
@@ -1029,8 +1032,8 @@ def run_gui() -> int:
                 self.codex_runner.cancel()
             elif self.busy:
                 should_close = self.message_box.askyesno(
-                    "实验仍在进行",
-                    "本地实验仍在运行，当前不能用“停止 Codex”中止它。确定要关闭窗口吗？",
+                    tr("实验仍在进行"),
+                    tr("本地实验仍在运行，当前不能用“停止 Codex”中止它。确定要关闭窗口吗？"),
                     parent=self,
                 )
                 if not should_close:
@@ -1051,25 +1054,18 @@ def run_gui() -> int:
                 self.submit_judgment_button.pack_forget()
                 self.reveal_button.pack_forget()
                 self.current_reveal = None
-            status_names = {"ok": "正常", "warning": "有提醒", "error": "存在错误", "unknown": "未知"}
+            status_names = {"ok": tr("正常"), "warning": tr("有提醒"), "error": tr("存在错误"), "unknown": tr("未知")}
             capability_value = view.environment.get("checks", {}).get("capabilities", {}).get("value", {})
-            capability_names = {"ok": "可以", "warning": "条件不足", "error": "不可用"}
+            capability_names = {"ok": tr("可以"), "warning": tr("条件不足"), "error": tr("不可用")}
             capabilities = (
-                f"可调查：{capability_names.get(capability_value.get('investigate'), '未知')} · "
-                f"可构建：{capability_names.get(capability_value.get('build'), '未知')} · "
-                f"可运行测试：{capability_names.get(capability_value.get('test'), '未知')}"
+                tr('可调查：{} · 可构建：{} · 可运行测试：{}').format(capability_names.get(capability_value.get('investigate'), '未知'), capability_names.get(capability_value.get('build'), '未知'), capability_names.get(capability_value.get('test'), '未知'))
             )
             self.result_summary_var.set(
-                f"案件：{view.case_id}\n"
-                f"Blender 仓库：{view.repo_path}\n"
-                f"当前 commit：{view.short_commit}\n"
-                f"环境状态：{status_names.get(view.environment_status, view.environment_status)}\n"
-                f"{capabilities}\n"
-                f"案件文件夹：{view.case_dir}"
+                tr('案件：{}\nBlender 仓库：{}\n当前 commit：{}\n环境状态：{}\n{}\n案件文件夹：{}').format(view.case_id, view.repo_path, view.short_commit, status_names.get(view.environment_status, view.environment_status), capabilities, view.case_dir)
             )
-            self.result_hint_var.set("案件已经创建，下一步请让 Codex 调查它。" if view.awaiting_investigation else "已读取 Codex 调查结果。")
+            self.result_hint_var.set(tr("案件已经创建，下一步请让 Codex 调查它。") if view.awaiting_investigation else tr("已读取 Codex 调查结果。"))
             if view.practice_session_id and self.current_reveal is None:
-                self.result_hint_var.set("历史练习进行中 · 真实修复和答案仍然隐藏。")
+                self.result_hint_var.set(tr("历史练习进行中 · 真实修复和答案仍然隐藏。"))
             self._render_codex_state()
             self._render_investigation(view)
             self.details_text.configure(state="normal")
@@ -1085,28 +1081,28 @@ def run_gui() -> int:
             self.cards_scroll.clear()
             data = view.investigation
             summary = data.get("summary", {})
-            intro = ttk.LabelFrame(self.cards_host, text="问题整理", style="Dark.TLabelframe", padding=18)
+            intro = ttk.LabelFrame(self.cards_host, text=tr("问题整理"), style="Dark.TLabelframe", padding=18)
             intro.pack(fill="x", pady=(0, 10))
-            self._wrap_label(intro, text=summary.get("problem") or "案件已创建，Codex 正在整理问题。", style="Body.TLabel", justify="left", font=self._font("SF Pro Display", 14, "bold")).pack(anchor="w")
+            self._wrap_label(intro, text=summary.get("problem") or tr("案件已创建，Codex 正在整理问题。"), style="Body.TLabel", justify="left", font=self._font("SF Pro Display", 14, "bold")).pack(anchor="w")
             self._render_metrics_card(view)
             self._render_causal_graph(data.get("causal_graph", {"nodes": [], "edges": []}))
             self._render_semantic_diff(data.get("semantic_diff", {}))
             if not data.get("hypotheses"):
                 empty = ttk.Frame(self.cards_host, style="Surface.TFrame", padding=24)
                 empty.pack(fill="x", pady=12)
-                ttk.Label(empty, text="◌  正在等待调查路径", style="Heading.TLabel").pack(anchor="w")
-                ttk.Label(empty, text="调查完成后，这里会出现三条有证据、可否定、可继续深入的路径。", style="Muted.TLabel").pack(anchor="w", pady=(5, 0))
-            priority_names = {"high": "高", "medium": "中", "low": "低"}
+                ttk.Label(empty, text=tr("◌  正在等待调查路径"), style="Heading.TLabel").pack(anchor="w")
+                ttk.Label(empty, text=tr("调查完成后，这里会出现三条有证据、可否定、可继续深入的路径。"), style="Muted.TLabel").pack(anchor="w", pady=(5, 0))
+            priority_names = {"high": tr("高"), "medium": tr("中"), "low": tr("低")}
             for index, item in enumerate(data.get("hypotheses", []), 1):
-                card = ttk.LabelFrame(self.cards_host, text=f"路径 0{index}", style="Dark.TLabelframe", padding=18)
+                card = ttk.LabelFrame(self.cards_host, text=tr('路径 0{}').format(index), style="Dark.TLabelframe", padding=18)
                 card.pack(fill="x", pady=(0, 12))
-                status = "（已否定）" if item.get("status") == "rejected" else ""
+                status = tr("（已否定）") if item.get("status") == "rejected" else ""
                 title_row = ttk.Frame(card, style="Card.TFrame")
                 title_row.pack(fill="x")
-                ttk.Label(title_row, text=item.get("title", "未命名路径"), style="Heading.TLabel").pack(side="left")
-                ttk.Label(title_row, text=f"  {priority_names.get(item.get('priority'), '未知')}优先级 {status}", style="Status.TLabel").pack(side="right")
+                ttk.Label(title_row, text=item.get("title", tr("未命名路径")), style="Heading.TLabel").pack(side="left")
+                ttk.Label(title_row, text=tr('  {}优先级 {}').format(priority_names.get(item.get('priority'), '未知'), status), style="Status.TLabel").pack(side="right")
                 self._wrap_label(card, text=item.get("claim", ""), style="Body.TLabel", justify="left").pack(anchor="w", pady=(10, 12))
-                ttk.Label(card, text="当前依据", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
+                ttk.Label(card, text=tr("当前依据"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
                 for basis in item.get("basis", []):
                     self._wrap_label(card, text=f"•  {basis}", style="Body.TLabel", justify="left").pack(anchor="w", pady=1)
                 for reference in item.get("source_references", []):
@@ -1115,38 +1111,38 @@ def run_gui() -> int:
                     ttk.Button(card, text=label, command=lambda ref=reference: self._open_reference(ref), style="Ghost.TButton").pack(anchor="w", pady=2)
                 next_box = ttk.Frame(card, style="Elevated.TFrame", padding=10)
                 next_box.pack(fill="x", pady=(10, 8))
-                self._wrap_label(next_box, text=f"下一步  →  {item.get('next_step', '')}", background=self.SURFACE_ALT, foreground=self.TEXT, justify="left", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w")
+                self._wrap_label(next_box, text=tr('下一步  →  {}').format(item.get('next_step', '')), background=self.SURFACE_ALT, foreground=self.TEXT, justify="left", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w")
                 buttons = ttk.Frame(card, style="Card.TFrame")
                 buttons.pack(anchor="w", pady=(4, 0))
-                ttk.Button(buttons, text="查看证据", command=lambda h=item: self._show_evidence(h), style="Action.TButton").pack(side="left")
-                ttk.Button(buttons, text="深入调查  →", command=lambda h=item: self._run_followup("deepen", h.get("id")), style="Primary.TButton").pack(side="left", padx=8)
-                ttk.Button(buttons, text="否定路径", command=lambda h=item: self._reject_path(h.get("id")), style="Ghost.TButton").pack(side="left")
+                ttk.Button(buttons, text=tr("查看证据"), command=lambda h=item: self._show_evidence(h), style="Action.TButton").pack(side="left")
+                ttk.Button(buttons, text=tr("深入调查  →"), command=lambda h=item: self._run_followup("deepen", h.get("id")), style="Primary.TButton").pack(side="left", padx=8)
+                ttk.Button(buttons, text=tr("否定路径"), command=lambda h=item: self._reject_path(h.get("id")), style="Ghost.TButton").pack(side="left")
                 experiments = [e for e in data.get("suggested_experiments", []) if e.get("hypothesis_id") == item.get("id")]
                 for experiment in experiments:
                     self._render_experiment_card(card, experiment)
             facts = [e.get("statement", "") for e in data.get("evidence", []) if e.get("kind") == "fact"]
             inferences = [e.get("statement", "") for e in data.get("evidence", []) if e.get("kind") == "inference"]
             unknowns = [u.get("question", "") for u in data.get("unknowns", [])]
-            for title, values in (("事实", facts), ("推测", inferences), ("未知", unknowns)):
+            for title, values in ((tr("事实"), facts), (tr("推测"), inferences), (tr("未知"), unknowns)):
                 box = ttk.LabelFrame(self.cards_host, text=title, style="Dark.TLabelframe", padding=14)
                 box.pack(fill="x", pady=(0, 8))
-                self._wrap_label(box, text="\n".join(f"•  {value}" for value in values) or "暂无", style="Body.TLabel", justify="left").pack(anchor="w")
+                self._wrap_label(box, text="\n".join(f"•  {value}" for value in values) or tr("暂无"), style="Body.TLabel", justify="left").pack(anchor="w")
             if self.current_reveal is not None:
                 self._render_practice_reveal(self.current_reveal)
             # 内容与换行宽度最终同步（修复窄窗口/DPI 变化下长文本被裁切）。
             self.cards_scroll.refresh()
 
         def _render_causal_graph(self, graph: dict[str, Any]) -> None:
-            panel = ttk.LabelFrame(self.cards_host, text="因果链 · AI 初稿，可编辑", style="Dark.TLabelframe", padding=14)
+            panel = ttk.LabelFrame(self.cards_host, text=tr("因果链 · AI 初稿，可编辑"), style="Dark.TLabelframe", padding=14)
             panel.pack(fill="x", pady=(0, 10))
             title_row = ttk.Frame(panel, style="Card.TFrame")
             title_row.pack(fill="x", pady=(0, 8))
-            ttk.Label(title_row, text="拖动卡片整理逻辑；从橙色圆点拖到另一张卡片连线；空白处拖动可平移；Ctrl+滚轮缩放。", style="Muted.TLabel").pack(side="left")
+            ttk.Label(title_row, text=tr("拖动卡片整理逻辑；从橙色圆点拖到另一张卡片连线；空白处拖动可平移；Ctrl+滚轮缩放。"), style="Muted.TLabel").pack(side="left")
             buttons = ttk.Frame(title_row, style="Card.TFrame")
             buttons.pack(side="right")
-            ttk.Button(buttons, text="＋ 添加节点", command=self._add_causal_node, style="Ghost.TButton").pack(side="left", padx=(6, 0))
-            ttk.Button(buttons, text="⛶ 自动布局", command=self._auto_layout_causal, style="Ghost.TButton").pack(side="left", padx=(6, 0))
-            ttk.Button(buttons, text="⊞ 适应内容", command=self._fit_causal_view, style="Ghost.TButton").pack(side="left", padx=(6, 0))
+            ttk.Button(buttons, text=tr("＋ 添加节点"), command=self._add_causal_node, style="Ghost.TButton").pack(side="left", padx=(6, 0))
+            ttk.Button(buttons, text=tr("⛶ 自动布局"), command=self._auto_layout_causal, style="Ghost.TButton").pack(side="left", padx=(6, 0))
+            ttk.Button(buttons, text=tr("⊞ 适应内容"), command=self._fit_causal_view, style="Ghost.TButton").pack(side="left", padx=(6, 0))
             ttk.Button(buttons, text="1:1", command=self._reset_causal_view, style="Ghost.TButton").pack(side="left", padx=(6, 0))
             nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
             edges = graph.get("edges", []) if isinstance(graph, dict) else []
@@ -1157,7 +1153,7 @@ def run_gui() -> int:
             if not nodes:
                 self.mindmap = None
                 self.causal_canvas = None
-                ttk.Label(panel, text="Codex 完成调查后会在这里生成“触发条件 → 状态变化 → 可见故障”的因果链。", style="Body.TLabel", justify="left").pack(anchor="w", pady=8)
+                ttk.Label(panel, text=tr("Codex 完成调查后会在这里生成“触发条件 → 状态变化 → 可见故障”的因果链。"), style="Body.TLabel", justify="left").pack(anchor="w", pady=8)
                 return
             colors = {
                 "surface": self.SURFACE,
@@ -1184,7 +1180,7 @@ def run_gui() -> int:
             self.mindmap.set_graph(self.causal_graph)
             legend = ttk.Frame(panel, style="Card.TFrame")
             legend.pack(fill="x", pady=(7, 0))
-            ttk.Label(legend, text="实线＝事实   虚线＝推测/未知   双击节点就地改名   空白处框选多节点   Delete 删除选中   Ctrl+Z/Ctrl+Y 撤销重做   按住 Alt 拖动临时关闭网格吸附", style="Muted.TLabel").pack(side="left")
+            ttk.Label(legend, text=tr("实线＝事实   虚线＝推测/未知   双击节点就地改名   空白处框选多节点   Delete 删除选中   Ctrl+Z/Ctrl+Y 撤销重做   按住 Alt 拖动临时关闭网格吸附"), style="Muted.TLabel").pack(side="left")
 
         def _auto_layout_causal(self) -> None:
             if self.mindmap is not None:
@@ -1206,7 +1202,7 @@ def run_gui() -> int:
             try:
                 self.current_case = self.controller.save_causal_graph(self.current_case.case_id, graph)
             except BugCompassError as exc:
-                self.message_box.showerror("无法保存因果链", str(exc), parent=self)
+                self.message_box.showerror(tr("无法保存因果链"), str(exc), parent=self)
 
         def _on_mindmap_status(self, text: str) -> None:
             self.result_hint_var.set(text)
@@ -1214,40 +1210,40 @@ def run_gui() -> int:
         def _add_causal_node(self) -> None:
             if self.current_case is None or self.mindmap is None:
                 return
-            label = self.simple_dialog.askstring("添加因果节点", "用一句话描述新的因果环节：", parent=self)
+            label = self.simple_dialog.askstring(tr("添加因果节点"), tr("用一句话描述新的因果环节："), parent=self)
             if not label or not label.strip():
                 return
             self.mindmap.add_node(label)
 
         def _render_semantic_diff(self, semantic: dict[str, Any]) -> None:
             status = semantic.get("status", "not_available")
-            names = {"not_available": "尚无相关代码改动", "proposed": "预期语义变化", "observed": "已观察到的语义变化"}
-            panel = ttk.LabelFrame(self.cards_host, text="语义 Diff · 行为规则变化", style="Dark.TLabelframe", padding=16)
+            names = {"not_available": tr("尚无相关代码改动"), "proposed": tr("预期语义变化"), "observed": tr("已观察到的语义变化")}
+            panel = ttk.LabelFrame(self.cards_host, text=tr("语义 Diff · 行为规则变化"), style="Dark.TLabelframe", padding=16)
             panel.pack(fill="x", pady=(0, 10))
             header = ttk.Frame(panel, style="Card.TFrame")
             header.pack(fill="x")
             ttk.Label(header, text=names.get(status, status), style="Status.TLabel").pack(side="left")
-            ttk.Button(header, text="分析当前代码改动", command=lambda: self._run_followup("semantic_diff", "working-tree"), style="Action.TButton").pack(side="right")
+            ttk.Button(header, text=tr("分析当前代码改动"), command=lambda: self._run_followup("semantic_diff", "working-tree"), style="Action.TButton").pack(side="right")
             if status == "not_available":
-                self._wrap_label(panel, text="当前还没有可解释的相关改动。代码发生变化后点击右侧按钮，Codex 会只读分析 git diff。", style="Muted.TLabel", justify="left").pack(anchor="w", pady=(8, 0))
+                self._wrap_label(panel, text=tr("当前还没有可解释的相关改动。代码发生变化后点击右侧按钮，Codex 会只读分析 git diff。"), style="Muted.TLabel", justify="left").pack(anchor="w", pady=(8, 0))
                 return
             self._wrap_label(panel, text=semantic.get("summary", ""), style="Body.TLabel", justify="left", font=self._font("SF Pro Display", 12, "bold")).pack(anchor="w", pady=(10, 8))
             rules = ttk.Frame(panel, style="Card.TFrame")
             rules.pack(fill="x")
-            for title, value, column in (("旧规则", semantic.get("old_rule", ""), 0), ("新规则", semantic.get("new_rule", ""), 1)):
+            for title, value, column in ((tr("旧规则"), semantic.get("old_rule", ""), 0), (tr("新规则"), semantic.get("new_rule", ""), 1)):
                 box = ttk.Frame(rules, style="Elevated.TFrame", padding=11)
                 box.grid(row=0, column=column, sticky="nsew", padx=(0, 5) if column == 0 else (5, 0))
                 rules.columnconfigure(column, weight=1)
                 ttk.Label(box, text=title, background=self.SURFACE_ALT, foreground=self.ORANGE, font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
-                self._wrap_label(box, text=value or "尚未明确", background=self.SURFACE_ALT, foreground=self.TEXT, justify="left").pack(anchor="w", pady=(4, 0))
-            for title, key in (("改变的不变量", "changed_invariants"), ("受影响路径", "affected_paths"), ("剩余风险", "remaining_risks")):
+                self._wrap_label(box, text=value or tr("尚未明确"), background=self.SURFACE_ALT, foreground=self.TEXT, justify="left").pack(anchor="w", pady=(4, 0))
+            for title, key in ((tr("改变的不变量"), "changed_invariants"), (tr("受影响路径"), "affected_paths"), (tr("剩余风险"), "remaining_risks")):
                 values = semantic.get(key, [])
                 if values:
                     ttk.Label(panel, text=title, style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(10, 2))
                     self._wrap_label(panel, text="\n".join(f"•  {value}" for value in values), style="Body.TLabel", justify="left").pack(anchor="w")
             references = semantic.get("source_references", [])
             if references:
-                ttk.Label(panel, text="源码依据", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(10, 2))
+                ttk.Label(panel, text=tr("源码依据"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(10, 2))
                 for reference in references:
                     line = reference.get("line")
                     label = f"↗ {reference.get('path', '')}{':' + str(line) if line else ''}"
@@ -1255,7 +1251,7 @@ def run_gui() -> int:
 
         def _ask_experiment_prediction(self, experiment: dict[str, Any]) -> tuple[str, str] | None:
             dialog = tk.Toplevel(self)
-            dialog.title("运行前预测")
+            dialog.title(tr("运行前预测"))
             dialog.geometry("650x500")
             dialog.minsize(560, 440)
             dialog.configure(background=self.BACKGROUND)
@@ -1264,17 +1260,17 @@ def run_gui() -> int:
             shell = ttk.Frame(dialog, style="App.TFrame", padding=24)
             shell.pack(fill="both", expand=True)
             ttk.Label(shell, text="PREDICT BEFORE RUN", style="Eyebrow.TLabel").pack(anchor="w")
-            ttk.Label(shell, text="先预测，再看结果", style="Title.TLabel", font=self._font("SF Pro Display", 22, "bold")).pack(anchor="w", pady=(4, 4))
-            ttk.Label(shell, text="预测会被锁定，实验完成后 BugCompass 会把它和实际输出对照，避免事后解释。", style="PageSubtitle.TLabel", wraplength=590, justify="left").pack(anchor="w", pady=(0, 14))
+            ttk.Label(shell, text=tr("先预测，再看结果"), style="Title.TLabel", font=self._font("SF Pro Display", 22, "bold")).pack(anchor="w", pady=(4, 4))
+            ttk.Label(shell, text=tr("预测会被锁定，实验完成后 BugCompass 会把它和实际输出对照，避免事后解释。"), style="PageSubtitle.TLabel", wraplength=590, justify="left").pack(anchor="w", pady=(0, 14))
             choice_var = tk.StringVar()
             options = [
-                experiment.get("expected_support") or "结果支持当前假设",
-                experiment.get("expected_weakening") or "结果削弱当前假设",
-                "会得到其他或无法判断的结果",
+                experiment.get("expected_support") or tr("结果支持当前假设"),
+                experiment.get("expected_weakening") or tr("结果削弱当前假设"),
+                tr("会得到其他或无法判断的结果"),
             ]
             for option in options:
                 tk.Radiobutton(shell, text=option, variable=choice_var, value=option, background=self.BACKGROUND, foreground=self.TEXT, activebackground=self.BACKGROUND, activeforeground=self.ORANGE, selectcolor=self.SURFACE_ALT, anchor="w", justify="left", wraplength=570, font=self._font("SF Pro Text", 10)).pack(fill="x", pady=4)
-            ttk.Label(shell, text="为什么这样预测？", style="PageSubtitle.TLabel", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w", pady=(14, 6))
+            ttk.Label(shell, text=tr("为什么这样预测？"), style="PageSubtitle.TLabel", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w", pady=(14, 6))
             rationale = tk.Text(shell, height=5, wrap="word", background=self.SURFACE_ALT, foreground=self.TEXT, insertbackground=self.TEXT, relief="flat", highlightthickness=1, highlightbackground=self.BORDER, highlightcolor=self.ORANGE, padx=12, pady=10, font=self._font("SF Pro Text", 11))
             rationale.pack(fill="both", expand=True)
             result: list[tuple[str, str]] = []
@@ -1284,13 +1280,13 @@ def run_gui() -> int:
             def save() -> None:
                 choice, reason = choice_var.get().strip(), rationale.get("1.0", "end-1c").strip()
                 if not choice or not reason:
-                    self.message_box.showwarning("预测还不完整", "请选择一个结果，并用一句话说明理由。", parent=dialog)
+                    self.message_box.showwarning(tr("预测还不完整"), tr("请选择一个结果，并用一句话说明理由。"), parent=dialog)
                     return
                 result.append((choice, reason))
                 dialog.destroy()
 
-            ttk.Button(row, text="取消", command=dialog.destroy, style="Ghost.TButton").pack(side="right")
-            ttk.Button(row, text="锁定预测并继续  →", command=save, style="Primary.TButton").pack(side="right", padx=(0, 8))
+            ttk.Button(row, text=tr("取消"), command=dialog.destroy, style="Ghost.TButton").pack(side="right")
+            ttk.Button(row, text=tr("锁定预测并继续  →"), command=save, style="Primary.TButton").pack(side="right", padx=(0, 8))
             dialog.wait_window()
             return result[0] if result else None
 
@@ -1298,7 +1294,7 @@ def run_gui() -> int:
             if self.current_case is None or not self.current_case.practice_session_id:
                 return
             dialog = tk.Toplevel(self)
-            dialog.title("提交根因判断")
+            dialog.title(tr("提交根因判断"))
             dialog.geometry("640x430")
             dialog.minsize(540, 360)
             dialog.configure(background=self.BACKGROUND)
@@ -1307,52 +1303,52 @@ def run_gui() -> int:
             shell = ttk.Frame(dialog, style="App.TFrame", padding=24)
             shell.pack(fill="both", expand=True)
             ttk.Label(shell, text="YOUR DIAGNOSIS", style="Eyebrow.TLabel").pack(anchor="w")
-            ttk.Label(shell, text="提交你的根因判断", style="Title.TLabel", font=self._font("SF Pro Display", 22, "bold")).pack(anchor="w", pady=(4, 4))
-            ttk.Label(shell, text="写清楚你认为哪里错了、为什么，以及最重要的证据。提交后才能揭晓真实修复。", style="PageSubtitle.TLabel", wraplength=570, justify="left").pack(anchor="w", pady=(0, 14))
+            ttk.Label(shell, text=tr("提交你的根因判断"), style="Title.TLabel", font=self._font("SF Pro Display", 22, "bold")).pack(anchor="w", pady=(4, 4))
+            ttk.Label(shell, text=tr("写清楚你认为哪里错了、为什么，以及最重要的证据。提交后才能揭晓真实修复。"), style="PageSubtitle.TLabel", wraplength=570, justify="left").pack(anchor="w", pady=(0, 14))
             editor = tk.Text(shell, wrap="word", background=self.SURFACE_ALT, foreground=self.TEXT, insertbackground=self.TEXT, selectbackground="#654127", relief="flat", highlightthickness=1, highlightbackground=self.BORDER, highlightcolor=self.ORANGE, padx=14, pady=12, font=self._font("SF Pro Text", 11))
             editor.pack(fill="both", expand=True)
             row = ttk.Frame(shell, style="App.TFrame")
             row.pack(fill="x", pady=(14, 0))
-            ttk.Button(row, text="取消", command=dialog.destroy, style="Ghost.TButton").pack(side="right")
+            ttk.Button(row, text=tr("取消"), command=dialog.destroy, style="Ghost.TButton").pack(side="right")
 
             def submit() -> None:
                 try:
                     self.practice_manager.submit_judgment(self.current_case.case_id, editor.get("1.0", "end-1c"))
                 except BugCompassError as exc:
-                    self.message_box.showerror("无法提交", str(exc), parent=dialog)
+                    self.message_box.showerror(tr("无法提交"), str(exc), parent=dialog)
                     return
                 dialog.destroy()
                 self.reveal_button.configure(state="normal")
-                self.result_hint_var.set("根因判断已锁定。现在可以揭晓真实修复。")
+                self.result_hint_var.set(tr("根因判断已锁定。现在可以揭晓真实修复。"))
 
-            ttk.Button(row, text="锁定判断  →", command=submit, style="Primary.TButton").pack(side="right", padx=(0, 8))
+            ttk.Button(row, text=tr("锁定判断  →"), command=submit, style="Primary.TButton").pack(side="right", padx=(0, 8))
             editor.focus_set()
 
         def _reveal_practice(self) -> None:
             if self.current_case is None or not self.current_case.practice_session_id:
                 return
-            if not self.message_box.askyesno("揭晓真实修复", "揭晓后会显示真实根因、修复 commit 和评分，当前判断不能再伪装成未揭晓状态。继续吗？", parent=self):
+            if not self.message_box.askyesno(tr("揭晓真实修复"), tr("揭晓后会显示真实根因、修复 commit 和评分，当前判断不能再伪装成未揭晓状态。继续吗？"), parent=self):
                 return
             try:
                 self.current_reveal = self.practice_manager.reveal(self.current_case.case_id)
                 self._show_case(self.controller.load_case(self.current_case.case_id))
-                self.result_hint_var.set("真实修复已揭晓，评分已保存到本地练习会话。")
+                self.result_hint_var.set(tr("真实修复已揭晓，评分已保存到本地练习会话。"))
             except BugCompassError as exc:
-                self.message_box.showerror("无法揭晓", str(exc), parent=self)
+                self.message_box.showerror(tr("无法揭晓"), str(exc), parent=self)
 
         def _render_practice_reveal(self, reveal: PracticeReveal) -> None:
-            panel = ttk.LabelFrame(self.cards_host, text="真实修复 · 练习评分", style="Dark.TLabelframe", padding=20)
+            panel = ttk.LabelFrame(self.cards_host, text=tr("真实修复 · 练习评分"), style="Dark.TLabelframe", padding=20)
             panel.pack(fill="x", pady=(12, 8))
             score_row = ttk.Frame(panel, style="Card.TFrame")
             score_row.pack(fill="x")
             ttk.Label(score_row, text=f"{reveal.quality_total} / {reveal.quality_max}", style="Heading.TLabel", font=self._font("SF Pro Display", 28, "bold"), foreground=self.ORANGE).pack(side="left")
-            ttk.Label(score_row, text=f"用时 {reveal.elapsed_seconds // 60} 分 {reveal.elapsed_seconds % 60} 秒  ·  AI 运行 {reveal.ai_runs} 次", style="Muted.TLabel").pack(side="right")
+            ttk.Label(score_row, text=tr('用时 {} 分 {} 秒  ·  AI 运行 {} 次').format(reveal.elapsed_seconds // 60, reveal.elapsed_seconds % 60, reveal.ai_runs), style="Muted.TLabel").pack(side="right")
             labels = {
-                "true_subsystem_in_top3": "前三路径命中真实子系统",
-                "relevant_files_found": "找到真实相关文件",
-                "valid_evidence": "引用有效证据",
-                "revealing_experiment": "提出有效实验",
-                "premature_lock_in": "避免过早锁定",
+                "true_subsystem_in_top3": tr("前三路径命中真实子系统"),
+                "relevant_files_found": tr("找到真实相关文件"),
+                "valid_evidence": tr("引用有效证据"),
+                "revealing_experiment": tr("提出有效实验"),
+                "premature_lock_in": tr("避免过早锁定"),
             }
             for key, label in labels.items():
                 row = ttk.Frame(panel, style="Elevated.TFrame", padding=(10, 7))
@@ -1360,12 +1356,12 @@ def run_gui() -> int:
                 ttk.Label(row, text=label, background=self.SURFACE_ALT, foreground=self.TEXT).pack(side="left")
                 ttk.Label(row, text=f"{reveal.scores.get(key, 0)} / 2", background=self.SURFACE_ALT, foreground=self.ORANGE, font=self._font("SF Pro Text", 10, "bold")).pack(side="right")
             answer = reveal.answer
-            ttk.Label(panel, text="你的判断", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(16, 4))
+            ttk.Label(panel, text=tr("你的判断"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(16, 4))
             self._wrap_label(panel, text=reveal.submission, style="Body.TLabel", justify="left").pack(anchor="w")
-            ttk.Label(panel, text="真实根因", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(16, 4))
+            ttk.Label(panel, text=tr("真实根因"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(16, 4))
             self._wrap_label(panel, text=answer.get("root_cause", ""), style="Body.TLabel", justify="left").pack(anchor="w")
-            ttk.Label(panel, text=f"修复 commit  {answer.get('fix_commit', '')[:12]}  ·  PR #{answer.get('pull_request', '')}", style="Status.TLabel").pack(anchor="w", pady=(12, 4))
-            self._wrap_label(panel, text="真实相关文件\n" + "\n".join(f"•  {path}" for path in answer.get("relevant_files", [])), style="Body.TLabel", justify="left").pack(anchor="w", pady=(5, 0))
+            ttk.Label(panel, text=tr('修复 commit  {}  ·  PR #{}').format(answer.get('fix_commit', '')[:12], answer.get('pull_request', '')), style="Status.TLabel").pack(anchor="w", pady=(12, 4))
+            self._wrap_label(panel, text=tr("真实相关文件\n") + "\n".join(f"•  {path}" for path in answer.get("relevant_files", [])), style="Body.TLabel", justify="left").pack(anchor="w", pady=(5, 0))
 
         def _add_timeline(self, message: str) -> None:
             self.timeline.insert("end", message)
@@ -1375,51 +1371,51 @@ def run_gui() -> int:
             try:
                 self.controller.open_source_reference(reference, self.current_case.repo_path if self.current_case else None)
             except BugCompassError as exc:
-                self.message_box.showerror("无法打开源码", str(exc), parent=self)
+                self.message_box.showerror(tr("无法打开源码"), str(exc), parent=self)
 
         def _show_evidence(self, hypothesis: dict[str, Any]) -> None:
             if self.current_case is None:
                 return
             wanted = set(hypothesis.get("evidence_ids", []))
             entries = [e for e in self.current_case.investigation.get("evidence", []) if e.get("id") in wanted]
-            text = "\n\n".join(f"[{('事实' if e.get('kind') == 'fact' else '推测')}] {e.get('statement', '')}" for e in entries) or "这条路径还没有关联证据。"
-            self.message_box.showinfo("路径证据", text, parent=self)
+            text = "\n\n".join(f"[{(tr('事实') if e.get('kind') == 'fact' else tr('推测'))}] {e.get('statement', '')}" for e in entries) or tr("这条路径还没有关联证据。")
+            self.message_box.showinfo(tr("路径证据"), text, parent=self)
 
         def _reject_path(self, hypothesis_id: str | None) -> None:
             if not self.current_case or not hypothesis_id:
                 return
-            if not self.message_box.askyesno("否定调查路径", "确认将这条路径标记为已否定？后续 Codex 更新会保留这个决定。", parent=self):
+            if not self.message_box.askyesno(tr("否定调查路径"), tr("确认将这条路径标记为已否定？后续 Codex 更新会保留这个决定。"), parent=self):
                 return
             try:
                 self._show_case(self.controller.reject_path(self.current_case.case_id, hypothesis_id))
             except BugCompassError as exc:
-                self.message_box.showerror("无法更新路径", str(exc), parent=self)
+                self.message_box.showerror(tr("无法更新路径"), str(exc), parent=self)
 
         def _render_experiment_card(self, parent: Any, experiment: dict[str, Any]) -> None:
-            permission_names = {"green": "绿色 · 只读", "yellow": "黄色 · 构建/测试/运行", "red": "红色 · 会修改数据"}
+            permission_names = {"green": tr("绿色 · 只读"), "yellow": tr("黄色 · 构建/测试/运行"), "red": tr("红色 · 会修改数据")}
             colors = {"green": "#25813B", "yellow": "#A46000", "red": "#B42318"}
             permission = experiment.get("permission", "red")
-            frame = ttk.LabelFrame(parent, text=f"实验 {experiment.get('id', '')}", style="Dark.TLabelframe", padding=14)
+            frame = ttk.LabelFrame(parent, text=tr('实验 {}').format(experiment.get('id', '')), style="Dark.TLabelframe", padding=14)
             frame.pack(fill="x", pady=(12, 0))
-            ttk.Label(frame, text=experiment.get("title", "未命名实验"), style="Heading.TLabel", font=self._font("SF Pro Display", 12, "bold")).pack(anchor="w")
-            self._wrap_label(frame, text=f"目的  {experiment.get('purpose') or experiment.get('description', '')}", style="Body.TLabel", justify="left").pack(anchor="w", pady=(5, 8))
+            ttk.Label(frame, text=experiment.get("title", tr("未命名实验")), style="Heading.TLabel", font=self._font("SF Pro Display", 12, "bold")).pack(anchor="w")
+            self._wrap_label(frame, text=tr('目的  {}').format(experiment.get('purpose') or experiment.get('description', '')), style="Body.TLabel", justify="left").pack(anchor="w", pady=(5, 8))
             command = experiment.get("command", [])
             command_box = ttk.Frame(frame, style="Elevated.TFrame", padding=10)
             command_box.pack(fill="x")
             self._wrap_label(command_box, text=f"$ {' '.join(command)}", background=self.SURFACE_ALT, foreground="#D6DAE2", font=self._font("SF Mono", 9), justify="left").pack(anchor="w")
-            self._wrap_label(frame, text=f"{experiment.get('description', '')}\n工作目录  {experiment.get('cwd', '.')}  ·  预计 {experiment.get('estimated_seconds', '?')} 秒", style="Muted.TLabel", justify="left").pack(anchor="w", pady=8)
+            self._wrap_label(frame, text=tr('{}\n工作目录  {}  ·  预计 {} 秒').format(experiment.get('description', ''), experiment.get('cwd', '.'), experiment.get('estimated_seconds', '?')), style="Muted.TLabel", justify="left").pack(anchor="w", pady=8)
             ttk.Label(frame, text=f"●  {permission_names.get(permission, permission)}", background=self.SURFACE, foreground=colors.get(permission, colors["red"]), font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w")
             if experiment.get("result"):
-                self._wrap_label(frame, text=f"上次结果  {experiment.get('result')}\n影响  {experiment.get('effect', 'pending')}", style="Body.TLabel", justify="left").pack(anchor="w", pady=(8, 0))
+                self._wrap_label(frame, text=tr('上次结果  {}\n影响  {}').format(experiment.get('result'), experiment.get('effect', 'pending')), style="Body.TLabel", justify="left").pack(anchor="w", pady=(8, 0))
             prediction = experiment.get("prediction", {})
             if prediction.get("predicted_at"):
                 prediction_box = ttk.Frame(frame, style="Elevated.TFrame", padding=10)
                 prediction_box.pack(fill="x", pady=(8, 0))
-                self._wrap_label(prediction_box, text=f"你的运行前预测  {prediction.get('choice', '')}", background=self.SURFACE_ALT, foreground=self.ORANGE, font=self._font("SF Pro Text", 10, "bold"), justify="left").pack(anchor="w")
+                self._wrap_label(prediction_box, text=tr('你的运行前预测  {}').format(prediction.get('choice', '')), background=self.SURFACE_ALT, foreground=self.ORANGE, font=self._font("SF Pro Text", 10, "bold"), justify="left").pack(anchor="w")
                 self._wrap_label(prediction_box, text=prediction.get("rationale", ""), background=self.SURFACE_ALT, foreground=self.MUTED, justify="left").pack(anchor="w", pady=(3, 0))
                 if experiment.get("prediction_comparison"):
-                    self._wrap_label(prediction_box, text=f"结果对照  {experiment.get('prediction_comparison')}", background=self.SURFACE_ALT, foreground=self.TEXT, justify="left").pack(anchor="w", pady=(5, 0))
-            ttk.Button(frame, text="运行实验  ▶", command=lambda e=experiment: self._approve_and_run_experiment(e), style="Action.TButton").pack(anchor="w", pady=(10, 0))
+                    self._wrap_label(prediction_box, text=tr('结果对照  {}').format(experiment.get('prediction_comparison')), background=self.SURFACE_ALT, foreground=self.TEXT, justify="left").pack(anchor="w", pady=(5, 0))
+            ttk.Button(frame, text=tr("运行实验  ▶"), command=lambda e=experiment: self._approve_and_run_experiment(e), style="Action.TButton").pack(anchor="w", pady=(10, 0))
 
         def _approve_and_run_experiment(self, experiment: dict[str, Any]) -> None:
             if self.busy or self.current_case is None:
@@ -1427,7 +1423,7 @@ def run_gui() -> int:
             try:
                 plan = self.controller.prepare_experiment(experiment, self.current_case.repo_path)
             except BugCompassError as exc:
-                self.message_box.showerror("实验不可执行", str(exc), parent=self)
+                self.message_box.showerror(tr("实验不可执行"), str(exc), parent=self)
                 return
             prediction = experiment.get("prediction", {})
             if not prediction.get("predicted_at"):
@@ -1440,32 +1436,32 @@ def run_gui() -> int:
                         self.current_case.case_id, plan.experiment_id, choice, rationale
                     )
                 except BugCompassError as exc:
-                    self.message_box.showerror("无法保存预测", str(exc), parent=self)
+                    self.message_box.showerror(tr("无法保存预测"), str(exc), parent=self)
                     return
-                self.result_hint_var.set("预测已锁定。实验结束后会自动对照实际结果。")
-            detail = f"将执行：\n{plan.command_text}\n\n工作目录：\n{plan.cwd}\n\n预计耗时：{plan.estimated_seconds} 秒"
+                self.result_hint_var.set(tr("预测已锁定。实验结束后会自动对照实际结果。"))
+            detail = tr('将执行：\n{}\n\n工作目录：\n{}\n\n预计耗时：{} 秒').format(plan.command_text, plan.cwd, plan.estimated_seconds)
             if plan.permission == "yellow":
-                approved = self.message_box.askyesno("确认黄色实验", detail + "\n\n该实验会构建、测试或启动 Blender。确认执行吗？", parent=self)
+                approved = self.message_box.askyesno(tr("确认黄色实验"), detail + tr("\n\n该实验会构建、测试或启动 Blender。确认执行吗？"), parent=self)
                 if not approved:
                     return
             elif plan.permission == "red":
-                answer = self.simple_dialog.askstring("明确授权红色实验", detail + "\n\n该操作可能修改源码、删除文件或影响 Git。请输入“明确授权”继续：", parent=self)
-                if answer != "明确授权":
-                    self.result_hint_var.set("红色实验未获得明确授权，未执行。")
+                answer = self.simple_dialog.askstring(tr("明确授权红色实验"), detail + tr("\n\n该操作可能修改源码、删除文件或影响 Git。请输入“明确授权”继续："), parent=self)
+                if answer != tr("明确授权"):
+                    self.result_hint_var.set(tr("红色实验未获得明确授权，未执行。"))
                     return
             view = self.current_case
             self.busy = True
             self.codex_active = False
             self.active_case_id = None
-            self._set_codex_state("idle", "正在运行本地实验，Codex 当前没有工作。")
-            self.result_hint_var.set(f"正在运行实验 {plan.experiment_id}……")
-            self._add_timeline(f"实验 {plan.experiment_id} 已获用户批准，正在执行。")
+            self._set_codex_state("idle", tr("正在运行本地实验，Codex 当前没有工作。"))
+            self.result_hint_var.set(tr('正在运行实验 {}……').format(plan.experiment_id))
+            self._add_timeline(tr('实验 {} 已获用户批准，正在执行。').format(plan.experiment_id))
             def worker() -> None:
                 try:
                     record = self.controller.run_experiment(view.case_id, plan)
                     self.events.put(("experiment_complete", (view, plan.experiment_id, record)))
                 except Exception as exc:
-                    message = str(exc) if isinstance(exc, (BugCompassError, OSError)) else "实验执行时发生意外错误。"
+                    message = str(exc) if isinstance(exc, (BugCompassError, OSError)) else tr("实验执行时发生意外错误。")
                     self.events.put(("error", (view.case_id, message)))
             threading.Thread(target=worker, daemon=False).start()
             self.after(100, self._poll_events)
@@ -1478,7 +1474,7 @@ def run_gui() -> int:
                 view = self.controller.load_case(selected_case_id)
                 self.controller.set_case_status(view.case_id, "investigating")
             except BugCompassError as exc:
-                self.message_box.showerror("无法开始调查", str(exc), parent=self)
+                self.message_box.showerror(tr("无法开始调查"), str(exc), parent=self)
                 return
             self.busy = True
             self.codex_active = True
@@ -1487,10 +1483,10 @@ def run_gui() -> int:
             self._active_runner = runner
             runner.reset_cancellation()
             self._refresh_recent_cases()
-            self._set_codex_state("working", "正在读取新增证据并更新同一个案件。")
+            self._set_codex_state("working", tr("正在读取新增证据并更新同一个案件。"))
             if self.current_case is not None and self.current_case.case_id == view.case_id:
-                self.result_hint_var.set("正在更新同一个案件……")
-                self._add_timeline("深入调查已有案件，不会创建新答案。")
+                self.result_hint_var.set(tr("正在更新同一个案件……"))
+                self._add_timeline(tr("深入调查已有案件，不会创建新答案。"))
             def worker() -> None:
                 try:
                     if view.practice_session_id:
@@ -1509,7 +1505,7 @@ def run_gui() -> int:
                         self.controller.set_case_status(view.case_id, "failed")
                     except BugCompassError:
                         pass
-                    message = str(exc) if isinstance(exc, (BugCompassError, OSError)) else "继续调查时发生意外错误。"
+                    message = str(exc) if isinstance(exc, (BugCompassError, OSError)) else tr("继续调查时发生意外错误。")
                     self.events.put(("error", (view.case_id, message)))
             threading.Thread(target=worker, daemon=False).start()
             self.after(100, self._poll_events)
@@ -1523,7 +1519,7 @@ def run_gui() -> int:
 
         # ------------------------------------------------------ 调查引擎选择
         def _engine_options(self) -> list[str]:
-            options = ["Codex CLI（默认）"]
+            options = [tr("Codex CLI（默认）")]
             options.extend(provider.display_name for provider in self.llm_providers)
             return options
 
@@ -1538,7 +1534,7 @@ def run_gui() -> int:
 
         def _engine_display_name(self) -> str:
             provider = self._active_provider()
-            return "Codex CLI（默认）" if provider is None else provider.display_name
+            return tr("Codex CLI（默认）") if provider is None else provider.display_name
 
         def _engine_label(self) -> str:
             provider = self._active_provider()
@@ -1564,14 +1560,14 @@ def run_gui() -> int:
             self.settings["active_engine"] = provider.id if provider else "codex"
             save_settings(self.settings)
             name = provider.display_name if provider else "Codex CLI"
-            self.progress_var.set(f"调查引擎已切换为 {name}（已保存）。")
+            self.progress_var.set(tr('调查引擎已切换为 {}（已保存）。').format(name))
             if provider is not None and provider.needs_key:
                 try:
                     resolve_api_key(provider)
                 except LLMError:
                     if self.message_box.askyesno(
-                        "需要 API 密钥",
-                        f"{provider.display_name} 还没有密钥，现在导入吗？\n（也可以稍后在 ⚙ 设置 → 模型服务里导入）",
+                        tr("需要 API 密钥"),
+                        tr('{} 还没有密钥，现在导入吗？\n（也可以稍后在 ⚙ 设置 → 模型服务里导入）').format(provider.display_name),
                         parent=self,
                     ):
                         self._import_api_key_dialog(provider)
@@ -1609,7 +1605,7 @@ def run_gui() -> int:
             apply_scaling(self, extra=max(0.5, self.ui_scale.factor))
             self._configure_styles(self._ttk_module)
             self._refresh_zoomable_content()
-            self.result_hint_var.set(f"界面缩放 {percent}%（已保存，重启后仍生效）")
+            self.result_hint_var.set(tr('界面缩放 {}%（已保存，重启后仍生效）').format(percent))
 
         def _refresh_zoomable_content(self) -> None:
             # 结果页会整体重建；其他页面只更新样式字体，输入内容不受影响。
@@ -1628,7 +1624,7 @@ def run_gui() -> int:
 
         # -------------------------------------------------------------- 指标
         def _render_metrics_card(self, view: CaseView) -> None:
-            panel = ttk.LabelFrame(self.cards_host, text="运行指标 · 本地保存", style="Dark.TLabelframe", padding=14)
+            panel = ttk.LabelFrame(self.cards_host, text=tr("运行指标 · 本地保存"), style="Dark.TLabelframe", padding=14)
             panel.pack(fill="x", pady=(0, 10))
             try:
                 pricing = load_pricing(view.workspace_path)
@@ -1639,21 +1635,21 @@ def run_gui() -> int:
             header = ttk.Frame(panel, style="Card.TFrame")
             header.pack(fill="x")
             if metrics is None or not metrics.runs:
-                ttk.Label(header, text="还没有 Codex 运行记录；运行后这里会显示模型、耗时、工具轮次与成本。", style="Muted.TLabel").pack(anchor="w")
+                ttk.Label(header, text=tr("还没有 Codex 运行记录；运行后这里会显示模型、耗时、工具轮次与成本。"), style="Muted.TLabel").pack(anchor="w")
                 return
             totals = metrics.to_dict()["totals"]
-            models = "、".join(metrics.models) or "未知"
+            models = "、".join(metrics.models) or tr("未知")
             runs = len(metrics.runs)
-            self._wrap_label(header, text=f"模型  {models}   ·   运行 {runs} 次", style="Heading.TLabel").pack(anchor="w")
+            self._wrap_label(header, text=tr('模型  {}   ·   运行 {} 次').format(models, runs), style="Heading.TLabel").pack(anchor="w")
             grid = ttk.Frame(panel, style="Card.TFrame")
             grid.pack(fill="x", pady=(8, 0))
             columns = (
-                ("累计耗时", format_duration(totals["duration_seconds"])),
-                ("对话轮次", str(totals["turns"])),
-                ("工具调用", str(totals["tool_calls"])),
-                ("输入 token", f"{totals['input_tokens']:,}（缓存 {totals['cached_input_tokens']:,}）"),
-                ("输出 token", f"{totals['output_tokens']:,}"),
-                ("估计成本", format_cost(totals["estimated_cost_usd"])),
+                (tr("累计耗时"), format_duration(totals["duration_seconds"])),
+                (tr("对话轮次"), str(totals["turns"])),
+                (tr("工具调用"), str(totals["tool_calls"])),
+                (tr("输入 token"), f"{totals['input_tokens']:,}tr(（缓存 ){totals['cached_input_tokens']:,}）"),
+                (tr("输出 token"), f"{totals['output_tokens']:,}"),
+                (tr("估计成本"), format_cost(totals["estimated_cost_usd"])),
             )
             for index, (name, value) in enumerate(columns):
                 box = ttk.Frame(grid, style="Elevated.TFrame", padding=(10, 7))
@@ -1661,10 +1657,10 @@ def run_gui() -> int:
                 grid.columnconfigure(index % 3, weight=1)
                 ttk.Label(box, text=name, background=self.SURFACE_ALT, foreground=self.MUTED, font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
                 ttk.Label(box, text=value, background=self.SURFACE_ALT, foreground=self.TEXT, font=self._font("SF Pro Text", 11, "bold")).pack(anchor="w", pady=(2, 0))
-            telemetry_state = "已开启（仅计数，且需再手动导出才会离开本机）" if telemetry_enabled() else "未开启"
+            telemetry_state = tr("已开启（仅计数，且需再手动导出才会离开本机）") if telemetry_enabled() else tr("未开启")
             self._wrap_label(
                 panel,
-                text=f"成本按 ~/.bugcompass/pricing.json 里你填写的单价估算；未配置的模型显示“未配置单价”，不会凭空估算。统计上报：{telemetry_state}。",
+                text=tr('成本按 ~/.bugcompass/pricing.json 里你填写的单价估算；未配置的模型显示“未配置单价”，不会凭空估算。统计上报：{}。').format(telemetry_state),
                 style="Muted.TLabel",
                 justify="left",
             ).pack(anchor="w", pady=(8, 0))
@@ -1697,17 +1693,17 @@ def run_gui() -> int:
             if self.current_case is None:
                 return
             if self.current_case.practice_session_id is not None:
-                self.message_box.showinfo("历史练习", "历史练习案例不用于向 Blender 提交新报告。", parent=self)
+                self.message_box.showinfo(tr("历史练习"), tr("历史练习案例不用于向 Blender 提交新报告。"), parent=self)
                 return
             case_id = self.current_case.case_id
             try:
                 draft = self.controller.load_repro_report_draft(case_id)
             except BugCompassError as exc:
-                self.message_box.showerror("报告草稿无法打开", str(exc), parent=self)
+                self.message_box.showerror(tr("报告草稿无法打开"), str(exc), parent=self)
                 return
 
             dialog = tk.Toplevel(self)
-            dialog.title(f"可复现报告包 · {case_id}")
+            dialog.title(tr('可复现报告包 · {}').format(case_id))
             dialog.geometry("750x740")
             dialog.minsize(650, 620)
             dialog.configure(background=self.BACKGROUND)
@@ -1715,33 +1711,33 @@ def run_gui() -> int:
             dialog.grab_set()
             shell = ttk.Frame(dialog, style="App.TFrame", padding=18)
             shell.pack(fill="both", expand=True)
-            ttk.Label(shell, text="可复现报告包", style="Title.TLabel", font=self._font("SF Pro Display", 21, "bold")).pack(anchor="w")
-            ttk.Label(shell, text="请核对预填信息。报告草稿保存在 Case 中；只有手动选择的附件会进入 ZIP。", style="PageSubtitle.TLabel", wraplength=680).pack(anchor="w", pady=(3, 12))
+            ttk.Label(shell, text=tr("可复现报告包"), style="Title.TLabel", font=self._font("SF Pro Display", 21, "bold")).pack(anchor="w")
+            ttk.Label(shell, text=tr("请核对预填信息。报告草稿保存在 Case 中；只有手动选择的附件会进入 ZIP。"), style="PageSubtitle.TLabel", wraplength=680).pack(anchor="w", pady=(3, 12))
 
             notebook = ttk.Notebook(shell)
             notebook.pack(fill="both", expand=True)
             content = ttk.Frame(notebook, style="Surface.TFrame", padding=14)
             review_page = ttk.Frame(notebook, style="Surface.TFrame", padding=14)
-            notebook.add(content, text="报告内容")
-            notebook.add(review_page, text="附件与检查")
+            notebook.add(content, text=tr("报告内容"))
+            notebook.add(review_page, text=tr("附件与检查"))
             content.columnconfigure(0, weight=1)
 
             entries: dict[str, Any] = {}
             text_boxes: dict[str, Any] = {}
             for row, (field, label) in enumerate((
-                ("title", "简明标题"),
-                ("broken_version", "出现问题的 Blender 版本"),
-                ("working_version", "最后正常版本（未知可留空）"),
-                ("system_info", "系统、显卡和驱动摘要（或在附件中加入 system-info.txt）"),
+                ("title", tr("简明标题")),
+                ("broken_version", tr("出现问题的 Blender 版本")),
+                ("working_version", tr("最后正常版本（未知可留空）")),
+                ("system_info", tr("系统、显卡和驱动摘要（或在附件中加入 system-info.txt）")),
             )):
                 ttk.Label(content, text=label, style="Heading.TLabel", font=self._font("SF Pro Text", 10, "bold")).grid(row=row * 2, column=0, sticky="w", pady=(6, 2))
                 variable = tk.StringVar(value=draft[field])
                 ttk.Entry(content, textvariable=variable, style="Dark.TEntry").grid(row=row * 2 + 1, column=0, sticky="ew")
                 entries[field] = variable
             for index, (field, label, height) in enumerate((
-                ("steps", "逐步复现操作", 5),
-                ("expected", "预期行为", 3),
-                ("actual", "实际行为", 3),
+                ("steps", tr("逐步复现操作"), 5),
+                ("expected", tr("预期行为"), 3),
+                ("actual", tr("实际行为"), 3),
             ), start=4):
                 ttk.Label(content, text=label, style="Heading.TLabel", font=self._font("SF Pro Text", 10, "bold")).grid(row=index * 2, column=0, sticky="w", pady=(7, 2))
                 editor = tk.Text(content, height=height, wrap="word", background=self.SURFACE_ALT, foreground=self.TEXT, insertbackground=self.TEXT, relief="flat", padx=8, pady=6)
@@ -1752,18 +1748,18 @@ def run_gui() -> int:
 
             flags: dict[str, Any] = {}
             for field, label in (
-                ("reproduced", "已按上述步骤在出错版本再次复现"),
-                ("factory_startup", "无需 .blend，可从默认场景复现"),
-                ("tested_latest", "已在最新稳定版或开发版复测"),
-                ("duplicate_checked", "已搜索开放与已关闭报告，检查重复"),
-                ("simplified_file", "所选 .blend 已删除无关内容"),
-                ("crash", "这是崩溃问题"),
+                ("reproduced", tr("已按上述步骤在出错版本再次复现")),
+                ("factory_startup", tr("无需 .blend，可从默认场景复现")),
+                ("tested_latest", tr("已在最新稳定版或开发版复测")),
+                ("duplicate_checked", tr("已搜索开放与已关闭报告，检查重复")),
+                ("simplified_file", tr("所选 .blend 已删除无关内容")),
+                ("crash", tr("这是崩溃问题")),
             ):
                 variable = tk.BooleanVar(value=draft[field])
                 tk.Checkbutton(review_page, text=label, variable=variable, background=self.SURFACE, foreground=self.TEXT, activebackground=self.SURFACE, activeforeground=self.TEXT, selectcolor=self.SURFACE_ALT, anchor="w").pack(anchor="w")
                 flags[field] = variable
 
-            ttk.Label(review_page, text="最近复测的 Blender 版本（如已复测）", style="Heading.TLabel", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w", pady=(8, 3))
+            ttk.Label(review_page, text=tr("最近复测的 Blender 版本（如已复测）"), style="Heading.TLabel", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w", pady=(8, 3))
             latest_version_var = tk.StringVar(value=draft["latest_tested_version"])
             ttk.Entry(review_page, textvariable=latest_version_var, style="Dark.TEntry").pack(fill="x")
             entries["latest_tested_version"] = latest_version_var
@@ -1778,7 +1774,7 @@ def run_gui() -> int:
 
             steps_editor.bind("<<Modified>>", invalidate_reproduction)
 
-            ttk.Label(review_page, text="公开附件（不会自动加入原始报告、源码或 Case 文件）", style="Heading.TLabel", font=self._font("SF Pro Text", 11, "bold")).pack(anchor="w", pady=(12, 5))
+            ttk.Label(review_page, text=tr("公开附件（不会自动加入原始报告、源码或 Case 文件）"), style="Heading.TLabel", font=self._font("SF Pro Text", 11, "bold")).pack(anchor="w", pady=(12, 5))
             attachment_paths = list(draft["attachments"])
             attachments = tk.Listbox(review_page, height=6, background=self.SURFACE_ALT, foreground=self.TEXT, selectbackground=self.BORDER, borderwidth=0)
             attachments.pack(fill="x")
@@ -1791,7 +1787,7 @@ def run_gui() -> int:
             refresh_attachments()
 
             def add_attachments() -> None:
-                selected = self.file_dialog.askopenfilenames(title="选择准备公开的 .blend、system-info.txt、截图或日志", parent=dialog)
+                selected = self.file_dialog.askopenfilenames(title=tr("选择准备公开的 .blend、system-info.txt、截图或日志"), parent=dialog)
                 for path in selected:
                     if path not in attachment_paths:
                         attachment_paths.append(path)
@@ -1804,8 +1800,8 @@ def run_gui() -> int:
 
             attachment_actions = ttk.Frame(review_page, style="Surface.TFrame")
             attachment_actions.pack(anchor="w", pady=(6, 10))
-            ttk.Button(attachment_actions, text="添加附件…", command=add_attachments, style="Action.TButton").pack(side="left")
-            ttk.Button(attachment_actions, text="移除所选", command=remove_attachment, style="Ghost.TButton").pack(side="left", padx=(8, 0))
+            ttk.Button(attachment_actions, text=tr("添加附件…"), command=add_attachments, style="Action.TButton").pack(side="left")
+            ttk.Button(attachment_actions, text=tr("移除所选"), command=remove_attachment, style="Ghost.TButton").pack(side="left", padx=(8, 0))
             review_var = tk.StringVar()
             ttk.Label(review_page, textvariable=review_var, style="Muted.TLabel", wraplength=650, justify="left").pack(anchor="w")
 
@@ -1820,78 +1816,78 @@ def run_gui() -> int:
             def show_review() -> None:
                 result = review_draft(current_draft())
                 if result.missing_required:
-                    status = "尚缺材料：" + "、".join(result.missing_required) + "。\n可导出草稿，但提交前请补齐。"
+                    status = tr("尚缺材料：") + "、".join(result.missing_required) + tr("。\n可导出草稿，但提交前请补齐。")
                 else:
-                    status = "必填材料已填写。请继续人工核对版本、复现、附件内容和报告真实性。"
-                review_var.set(status + "\n建议核对：" + "；".join(result.suggestions))
+                    status = tr("必填材料已填写。请继续人工核对版本、复现、附件内容和报告真实性。")
+                review_var.set(status + tr("\n建议核对：") + "；".join(result.suggestions))
 
             def save() -> bool:
                 try:
                     self.controller.save_repro_report_draft(case_id, current_draft())
                 except BugCompassError as exc:
-                    self.message_box.showerror("保存失败", str(exc), parent=dialog)
+                    self.message_box.showerror(tr("保存失败"), str(exc), parent=dialog)
                     return False
                 show_review()
-                self.result_hint_var.set("可复现报告草稿已保存到当前 Case。")
+                self.result_hint_var.set(tr("可复现报告草稿已保存到当前 Case。"))
                 return True
 
             def export() -> None:
                 if not save():
                     return
                 target = self.file_dialog.asksaveasfilename(
-                    title="保存可复现报告包",
+                    title=tr("保存可复现报告包"),
                     defaultextension=".zip",
-                    initialfile=f"{case_id}-可复现报告包.zip",
-                    filetypes=[("ZIP 压缩包", "*.zip")],
+                    initialfile=tr('{}-可复现报告包.zip').format(case_id),
+                    filetypes=[(tr("ZIP 压缩包"), "*.zip")],
                     parent=dialog,
                 )
                 if not target:
                     return
-                warning = "\n".join(f"- {path}" for path in attachment_paths) or "（没有附件）"
+                warning = "\n".join(f"- {path}" for path in attachment_paths) or tr("（没有附件）")
                 if not self.message_box.askyesno(
-                    "核对公开内容",
-                    "报告正文和以下附件将写入本地 ZIP：\n" + warning +
-                    "\n\n请确认附件不含私人或项目敏感内容；程序不会自动脱敏或上传。继续导出？",
+                    tr("核对公开内容"),
+                    tr("报告正文和以下附件将写入本地 ZIP：\n") + warning +
+                    tr("\n\n请确认附件不含私人或项目敏感内容；程序不会自动脱敏或上传。继续导出？"),
                     parent=dialog,
                 ):
                     return
                 try:
                     result = self.controller.export_repro_report_package(case_id, target)
                 except BugCompassError as exc:
-                    self.message_box.showerror("导出失败", str(exc), parent=dialog)
+                    self.message_box.showerror(tr("导出失败"), str(exc), parent=dialog)
                     return
                 self.message_box.showinfo(
-                    "报告包已导出",
-                    f"已保存到：\n{result.path}\n\n请先阅读 ZIP 内的发布前检查清单，再提交报告与所需附件。",
+                    tr("报告包已导出"),
+                    tr('已保存到：\n{}\n\n请先阅读 ZIP 内的发布前检查清单，再提交报告与所需附件。').format(result.path),
                     parent=dialog,
                 )
-                self.result_hint_var.set("可复现报告包已导出；提交前请核对检查清单。")
+                self.result_hint_var.set(tr("可复现报告包已导出；提交前请核对检查清单。"))
 
             show_review()
             actions = ttk.Frame(shell, style="App.TFrame")
             actions.pack(fill="x", pady=(12, 0))
-            ttk.Button(actions, text="关闭", command=dialog.destroy, style="Ghost.TButton").pack(side="right")
-            ttk.Button(actions, text="导出 ZIP…", command=export, style="Primary.TButton").pack(side="right", padx=(0, 8))
-            ttk.Button(actions, text="保存草稿", command=save, style="Action.TButton").pack(side="right", padx=(0, 8))
+            ttk.Button(actions, text=tr("关闭"), command=dialog.destroy, style="Ghost.TButton").pack(side="right")
+            ttk.Button(actions, text=tr("导出 ZIP…"), command=export, style="Primary.TButton").pack(side="right", padx=(0, 8))
+            ttk.Button(actions, text=tr("保存草稿"), command=save, style="Action.TButton").pack(side="right", padx=(0, 8))
 
         # -------------------------------------------------------------- 备份
         def _backup_workspace(self) -> None:
             if self.current_case is None:
-                self.message_box.showinfo("备份", "请先打开一个案件（备份会打包整个工作区）。", parent=self)
+                self.message_box.showinfo(tr("备份"), tr("请先打开一个案件（备份会打包整个工作区）。"), parent=self)
                 return
             try:
-                target = create_backup(self.current_case.workspace_path, note=f"GUI 导出 · v{__version__}")
+                target = create_backup(self.current_case.workspace_path, note=tr('GUI 导出 · v{}').format(__version__))
             except (BackupError, OSError) as exc:
-                self.message_box.showerror("备份失败", str(exc), parent=self)
+                self.message_box.showerror(tr("备份失败"), str(exc), parent=self)
                 return
-            if self.message_box.askyesno("备份完成", f"备份已保存：\n{target}\n\n是否打开所在文件夹？", parent=self):
+            if self.message_box.askyesno(tr("备份完成"), tr('备份已保存：\n{}\n\n是否打开所在文件夹？').format(target), parent=self):
                 self._open_path_in_explorer(target)
-            self.result_hint_var.set("工作区备份完成。")
+            self.result_hint_var.set(tr("工作区备份完成。"))
 
         def _restore_backup_dialog(self) -> None:
             archive = self.file_dialog.askopenfilename(
-                title="选择 BugCompass 备份文件",
-                filetypes=[("BugCompass 备份", "*.zip"), ("所有文件", "*.*")],
+                title=tr("选择 BugCompass 备份文件"),
+                filetypes=[(tr("BugCompass 备份"), "*.zip"), (tr("所有文件"), "*.*")],
                 parent=self,
             )
             if not archive:
@@ -1899,33 +1895,33 @@ def run_gui() -> int:
             try:
                 manifest = inspect_backup(archive)
             except (BackupError, OSError) as exc:
-                self.message_box.showerror("备份无效", str(exc), parent=self)
+                self.message_box.showerror(tr("备份无效"), str(exc), parent=self)
                 return
             count = manifest.get("file_count", "?")
-            created = str(manifest.get("created_at", "未知"))[:19].replace("T", " ")
-            version = manifest.get("app_version", "未知")
-            target_dir = self.file_dialog.askdirectory(title=f"恢复到哪个文件夹？（备份：{count} 个文件 · v{version} · {created}）", parent=self)
+            created = str(manifest.get("created_at", tr("未知")))[:19].replace("T", " ")
+            version = manifest.get("app_version", tr("未知"))
+            target_dir = self.file_dialog.askdirectory(title=tr('恢复到哪个文件夹？（备份：{} 个文件 · v{} · {}）').format(count, version, created), parent=self)
             if not target_dir:
                 return
             try:
                 destination = restore_backup(archive, target_dir)
             except (BackupError, OSError) as exc:
-                self.message_box.showerror("恢复失败", str(exc), parent=self)
+                self.message_box.showerror(tr("恢复失败"), str(exc), parent=self)
                 return
             migrations = ""
             self.message_box.showinfo(
-                "恢复完成",
-                f"工作区已恢复到：\n{destination}\n\n迁移记录见工作区内的 backup-manifest.json。{migrations}",
+                tr("恢复完成"),
+                tr('工作区已恢复到：\n{}\n\n迁移记录见工作区内的 backup-manifest.json。{}').format(destination, migrations),
                 parent=self,
             )
 
         def _export_diagnostics(self) -> None:
             include_case = self.message_box.askyesno(
-                "诊断包内容",
-                "诊断包包含：崩溃日志、环境摘要、设置（已脱敏）。\n\n是否额外包含当前案件的结构信息（只有计数与状态，不含问题描述、证据正文或源码）？",
+                tr("诊断包内容"),
+                tr("诊断包包含：崩溃日志、环境摘要、设置（已脱敏）。\n\n是否额外包含当前案件的结构信息（只有计数与状态，不含问题描述、证据正文或源码）？"),
                 parent=self,
             )
-            dest = self.file_dialog.askdirectory(title="诊断包保存到哪个文件夹？", parent=self)
+            dest = self.file_dialog.askdirectory(title=tr("诊断包保存到哪个文件夹？"), parent=self)
             if not dest:
                 return
             try:
@@ -1936,9 +1932,9 @@ def run_gui() -> int:
                     include_case_structure=include_case,
                 )
             except Exception as exc:
-                self.message_box.showerror("导出失败", f"无法生成诊断包：{exc}", parent=self)
+                self.message_box.showerror(tr("导出失败"), tr('无法生成诊断包：{}').format(exc), parent=self)
                 return
-            if self.message_box.askyesno("导出完成", f"诊断包已保存（已自动脱敏并通过自检）：\n{target}\n\n是否打开所在文件夹？", parent=self):
+            if self.message_box.askyesno(tr("导出完成"), tr('诊断包已保存（已自动脱敏并通过自检）：\n{}\n\n是否打开所在文件夹？').format(target), parent=self):
                 self._open_path_in_explorer(target)
 
         def _open_path_in_explorer(self, path: Any) -> None:
@@ -1960,7 +1956,7 @@ def run_gui() -> int:
             from .issue_scout import FALLBACK_MODULES
 
             dialog = tk.Toplevel(self)
-            dialog.title("AI 挑选 Issue — Blender tracker 筛选")
+            dialog.title(tr("AI 挑选 Issue — Blender tracker 筛选"))
             dialog.geometry("1020x700")
             dialog.minsize(880, 600)
             dialog.configure(background=self.BACKGROUND)
@@ -1974,14 +1970,14 @@ def run_gui() -> int:
             brand = ttk.Frame(header, style="App.TFrame")
             brand.pack(side="left")
             ttk.Label(brand, text="ISSUE SCOUT", style="Eyebrow.TLabel").pack(anchor="w")
-            ttk.Label(brand, text="AI 挑选 Issue", style="Title.TLabel", font=self._font("SF Pro Display", 20, "bold")).pack(anchor="w", pady=(2, 0))
-            self._scout_status_var = tk.StringVar(value="选择条件后点击「开始筛选」。筛选需要联网抓取 tracker，并用你配置的大模型评分。")
+            ttk.Label(brand, text=tr("AI 挑选 Issue"), style="Title.TLabel", font=self._font("SF Pro Display", 20, "bold")).pack(anchor="w", pady=(2, 0))
+            self._scout_status_var = tk.StringVar(value=tr("选择条件后点击「开始筛选」。筛选需要联网抓取 tracker，并用你配置的大模型评分。"))
             ttk.Label(header, textvariable=self._scout_status_var, style="PageStatus.TLabel", wraplength=380, justify="left").pack(side="right", anchor="ne")
 
             # ---- 选项区
-            options = ttk.LabelFrame(shell, text="筛选条件", style="Dark.TLabelframe", padding=14)
+            options = ttk.LabelFrame(shell, text=tr("筛选条件"), style="Dark.TLabelframe", padding=14)
             options.pack(fill="x", pady=(0, 10))
-            ttk.Label(options, text="模块（可多选；不选＝全部）", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
+            ttk.Label(options, text=tr("模块（可多选；不选＝全部）"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
             modules_box = ttk.Frame(options, style="Card.TFrame")
             modules_box.pack(fill="x", pady=(6, 10))
             module_vars: dict[str, tk.BooleanVar] = {}
@@ -1997,16 +1993,16 @@ def run_gui() -> int:
                 ).grid(row=row, column=column, sticky="w", padx=(0, 14), pady=1)
             row2 = ttk.Frame(options, style="Card.TFrame")
             row2.pack(fill="x")
-            ttk.Label(row2, text="类型", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(0, 8))
-            type_var = tk.StringVar(value="全部")
-            for value, label in (("全部", "全部"), ("Type/Bug", "Bug"), ("Type/Report", "功能需求"), ("Type/Known Issue", "已知问题")):
+            ttk.Label(row2, text=tr("类型"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(0, 8))
+            type_var = tk.StringVar(value=tr("全部"))
+            for value, label in ((tr("全部"), tr("全部")), ("Type/Bug", "Bug"), ("Type/Report", tr("功能需求")), ("Type/Known Issue", tr("已知问题"))):
                 tk.Radiobutton(
                     row2, text=label, variable=type_var, value=value,
                     background=self.SURFACE, foreground=self.TEXT, activebackground=self.SURFACE,
                     activeforeground=self.TEXT, selectcolor=self.SURFACE_ALT, highlightthickness=0, bd=0,
                     font=("SF Pro Text", 10),
                 ).pack(side="left", padx=(0, 14))
-            ttk.Label(row2, text="数量", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(16, 6))
+            ttk.Label(row2, text=tr("数量"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(16, 6))
             count_spin = tk.Spinbox(
                 row2, from_=10, to=100, increment=10, width=5,
                 background=self.SURFACE_ALT, foreground=self.TEXT, buttonbackground=self.SURFACE_ALT,
@@ -2017,25 +2013,25 @@ def run_gui() -> int:
             count_spin.pack(side="left")
             self._scout_gfi_var = tk.BooleanVar(value=False)
             tk.Checkbutton(
-                row2, text="只看 Good First Issue", variable=self._scout_gfi_var,
+                row2, text=tr("只看 Good First Issue"), variable=self._scout_gfi_var,
                 background=self.SURFACE, foreground=self.ORANGE, activebackground=self.SURFACE,
                 activeforeground=self.ORANGE, selectcolor=self.SURFACE_ALT, highlightthickness=0, bd=0,
                 font=("SF Pro Text", 10, "bold"),
             ).pack(side="left", padx=(16, 0))
             self._scout_hide_taken_var = tk.BooleanVar(value=True)
             hide_taken_button = tk.Checkbutton(
-                row2, text="只显示没人占用的", variable=self._scout_hide_taken_var,
+                row2, text=tr("只显示没人占用的"), variable=self._scout_hide_taken_var,
                 background=self.SURFACE, foreground=self.TEXT, activebackground=self.SURFACE,
                 activeforeground=self.TEXT, selectcolor=self.SURFACE_ALT, highlightthickness=0, bd=0,
                 font=("SF Pro Text", 10),
             )
             hide_taken_button.pack(side="left", padx=(10, 0))
-            ttk.Label(row2, text="评分引擎", style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(16, 6))
+            ttk.Label(row2, text=tr("评分引擎"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(side="left", padx=(16, 6))
             self._scout_engine_var = tk.StringVar()
             engine_names = []
             for provider in self.llm_providers:
                 missing = provider.needs_key and not get_key(provider.id) and not os.environ.get(provider.api_key_env)
-                engine_names.append(provider.display_name + ("（未导入密钥）" if missing else ""))
+                engine_names.append(provider.display_name + (tr("（未导入密钥）") if missing else ""))
             if engine_names:
                 self._scout_engine_var.set(engine_names[0])
                 engine_menu = tk.OptionMenu(row2, self._scout_engine_var, *engine_names)
@@ -2046,21 +2042,21 @@ def run_gui() -> int:
                 )
                 engine_menu.pack(side="left")
             else:
-                ttk.Label(row2, text="尚未配置大模型服务（⚙ 设置 → 模型服务）", style="Status.TLabel").pack(side="left")
+                ttk.Label(row2, text=tr("尚未配置大模型服务（⚙ 设置 → 模型服务）"), style="Status.TLabel").pack(side="left")
             self._scout_start_button = ttk.Button(
-                options, text="🚀 开始筛选（联网抓取 + AI 评分）", command=lambda: self._scout_run_scan(dialog, module_vars, type_var, count_spin), style="Primary.TButton"
+                options, text=tr("🚀 开始筛选（联网抓取 + AI 评分）"), command=lambda: self._scout_run_scan(dialog, module_vars, type_var, count_spin), style="Primary.TButton"
             )
             self._scout_start_button.pack(anchor="w", pady=(12, 0))
 
             # ---- 结果区
-            result_card = ttk.LabelFrame(shell, text="筛选结果（按 AI 评分排序）", style="Dark.TLabelframe", padding=10)
+            result_card = ttk.LabelFrame(shell, text=tr("筛选结果（按 AI 评分排序）"), style="Dark.TLabelframe", padding=10)
             result_card.pack(fill="both", expand=True)
             columns = ("score", "number", "title", "difficulty", "taken", "module", "comments")
             self._scout_tree = ttk.Treeview(result_card, columns=columns, show="headings", style="Scout.Treeview", selectmode="browse")
             for cid, text, width, anchor in (
-                ("score", "评分", 55, "center"), ("number", "#", 65, "w"),
-                ("title", "标题", 420, "w"), ("difficulty", "难度", 65, "center"),
-                ("taken", "占用", 75, "center"), ("module", "模块", 150, "w"), ("comments", "评论", 45, "center"),
+                ("score", tr("评分"), 55, "center"), ("number", "#", 65, "w"),
+                ("title", tr("标题"), 420, "w"), ("difficulty", tr("难度"), 65, "center"),
+                ("taken", tr("占用"), 75, "center"), ("module", tr("模块"), 150, "w"), ("comments", tr("评论"), 45, "center"),
             ):
                 self._scout_tree.heading(cid, text=text)
                 self._scout_tree.column(cid, width=width, anchor=anchor, stretch=(cid == "title"))
@@ -2077,10 +2073,10 @@ def run_gui() -> int:
             self._scout_detail_text.pack(fill="both", expand=True)
             actions = ttk.Frame(shell, style="App.TFrame")
             actions.pack(fill="x", pady=(10, 0))
-            ttk.Button(actions, text="创建调查案件  →", command=lambda: self._scout_create_case(), style="Primary.TButton").pack(side="left")
-            ttk.Button(actions, text="在浏览器打开", command=lambda: self._scout_open_browser(), style="Action.TButton").pack(side="left", padx=(10, 0))
-            ttk.Button(actions, text="导出结果…", command=lambda: self._scout_export(), style="Action.TButton").pack(side="left", padx=(10, 0))
-            ttk.Label(actions, text="评分标准可用 ~/.bugcompass/scout-prompt.md 私有化", style="Muted.TLabel").pack(side="right")
+            ttk.Button(actions, text=tr("创建调查案件  →"), command=lambda: self._scout_create_case(), style="Primary.TButton").pack(side="left")
+            ttk.Button(actions, text=tr("在浏览器打开"), command=lambda: self._scout_open_browser(), style="Action.TButton").pack(side="left", padx=(10, 0))
+            ttk.Button(actions, text=tr("导出结果…"), command=lambda: self._scout_export(), style="Action.TButton").pack(side="left", padx=(10, 0))
+            ttk.Label(actions, text=tr("评分标准可用 ~/.bugcompass/scout-prompt.md 私有化"), style="Muted.TLabel").pack(side="right")
 
             # 状态
             self._scout_records: list[IssueRecord] = []
@@ -2096,7 +2092,7 @@ def run_gui() -> int:
                 fetched_at = str(cache.get("fetched_at", ""))[:16].replace("T", " ")
                 if records:
                     self._scout_populate(records, scores)
-                    self._scout_status_var.set(f"显示上次筛选结果（{fetched_at}，离线缓存）。可重新筛选获取最新。")
+                    self._scout_status_var.set(tr('显示上次筛选结果（{}，离线缓存）。可重新筛选获取最新。').format(fetched_at))
             dialog.grab_set()
 
         def _scout_current_provider(self):
@@ -2111,23 +2107,23 @@ def run_gui() -> int:
         def _scout_run_scan(self, dialog: Any, module_vars: dict[str, Any], type_var: Any, count_spin: Any) -> None:
             provider = self._scout_current_provider()
             if provider is None:
-                self.message_box.showwarning("缺少评分引擎", "请先在 ⚙ 设置 → 模型服务里配置并导入密钥，再使用 AI 筛选。", parent=dialog)
+                self.message_box.showwarning(tr("缺少评分引擎"), tr("请先在 ⚙ 设置 → 模型服务里配置并导入密钥，再使用 AI 筛选。"), parent=dialog)
                 return
             try:
                 resolve_api_key(provider)
             except LLMError:
-                if self.message_box.askyesno("需要 API 密钥", f"{provider.display_name} 还没有密钥，现在导入吗？", parent=dialog):
+                if self.message_box.askyesno(tr("需要 API 密钥"), tr('{} 还没有密钥，现在导入吗？').format(provider.display_name), parent=dialog):
                     self._import_api_key_dialog(provider)
                 return
             modules = [name for name, var in module_vars.items() if var.get()]
-            types = [] if type_var.get() == "全部" else [type_var.get()]
+            types = [] if type_var.get() == tr("全部") else [type_var.get()]
             good_first_only = bool(self._scout_gfi_var.get())
             try:
                 limit = max(10, min(100, int(count_spin.get())))
             except (TypeError, ValueError):
                 limit = 40
             self._scout_start_button.configure(state="disabled")
-            self._scout_status_var.set("正在抓取 Blender tracker……")
+            self._scout_status_var.set(tr("正在抓取 Blender tracker……"))
 
             def alive() -> bool:
                 try:
@@ -2145,7 +2141,7 @@ def run_gui() -> int:
                     records = fetch_open_issues(limit=limit, progress=lambda text: apply_ui(lambda: self._scout_status_var.set(text)))
                     records = filter_issues(records, modules=modules, types=types, good_first_only=good_first_only)
                     if not records:
-                        apply_ui(lambda: (self._scout_status_var.set("没有符合条件的 issue，试着放宽模块或类型。"), self._scout_start_button.configure(state="normal")))
+                        apply_ui(lambda: (self._scout_status_var.set(tr("没有符合条件的 issue，试着放宽模块或类型。")), self._scout_start_button.configure(state="normal")))
                         return
                     enrich_with_comments(records, progress=lambda text: apply_ui(lambda: self._scout_status_var.set(text)))
                     scores = score_issues(provider, records, progress=lambda text: apply_ui(lambda: self._scout_status_var.set(text)))
@@ -2165,8 +2161,7 @@ def run_gui() -> int:
                         ranked = sum(1 for s in scores.values() if s.score is not None)
                         taken_count = sum(1 for s in scores.values() if s.taken)
                         self._scout_status_var.set(
-                            f"筛选完成：{len(records)} 个 issue，{ranked} 个已评分，"
-                            f"{taken_count} 个疑似已有人接手（已默认隐藏，可取消勾选查看）。（已缓存，断网可看）"
+                            tr('筛选完成：{} 个 issue，{} 个已评分，{} 个疑似已有人接手（已默认隐藏，可取消勾选查看）。（已缓存，断网可看）').format(len(records), ranked, taken_count)
                         )
                         self._scout_start_button.configure(state="normal")
 
@@ -2175,7 +2170,7 @@ def run_gui() -> int:
                     message = str(exc)
                     apply_ui(lambda: (self._scout_status_var.set(message), self._scout_start_button.configure(state="normal")))
                 except Exception as exc:  # pragma: no cover
-                    message = f"筛选失败：{exc}"
+                    message = tr('筛选失败：{}').format(exc)
                     apply_ui(lambda: (self._scout_status_var.set(message), self._scout_start_button.configure(state="normal")))
 
             threading.Thread(target=work, daemon=True).start()
@@ -2190,12 +2185,12 @@ def run_gui() -> int:
                 if hide_taken and score is not None and score.taken:
                     continue
                 value = f"{score.score}" if score and score.score is not None else "—"
-                module = record.module_labels[0].removeprefix("Module/") if record.module_labels else "其他"
+                module = record.module_labels[0].removeprefix("Module/") if record.module_labels else tr("其他")
                 title = ("★ " + record.title) if record.good_first else record.title
-                taken_text = "已占用" if (score and score.taken) else "空闲"
+                taken_text = tr("已占用") if (score and score.taken) else tr("空闲")
                 tree.insert("", "end", iid=str(record.number), values=(
                     value, f"#{record.number}", title[:80],
-                    score.difficulty if score else "未知", taken_text, module, record.comments,
+                    score.difficulty if score else tr("未知"), taken_text, module, record.comments,
                 ))
 
         def _scout_repopulate(self) -> None:
@@ -2216,15 +2211,15 @@ def run_gui() -> int:
             score = self._scout_scores.get(record.number)
             lines = [f"#{record.number} {record.title}", ""]
             if score:
-                lines.append(f"AI 评分：{score.score if score.score is not None else '未评分'}/10 · {score.difficulty}")
-                lines.append(f"理由：{score.reason}")
+                lines.append(tr('AI 评分：{}/10 · {}').format(score.score if score.score is not None else '未评分', score.difficulty))
+                lines.append(tr('理由：{}').format(score.reason))
                 if score.taken:
-                    lines.append(f"⚠️ 疑似已有人接手：{score.taken_evidence or '证据见 tracker'}")
+                    lines.append(tr('⚠️ 疑似已有人接手：{}').format(score.taken_evidence or '证据见 tracker'))
                 lines.append("")
-            lines.append(f"标签：{', '.join(record.labels) or '无'}")
-            lines.append(f"创建：{record.created_at[:10]} · 评论 {record.comments}")
+            lines.append(tr('标签：{}').format(', '.join(record.labels) or '无'))
+            lines.append(tr('创建：{} · 评论 {}').format(record.created_at[:10], record.comments))
             lines.append("")
-            lines.append(record.body[:1500] or "（正文为空）")
+            lines.append(record.body[:1500] or tr("（正文为空）"))
             self._scout_detail_text.configure(state="normal")
             self._scout_detail_text.delete("1.0", "end")
             self._scout_detail_text.insert("1.0", "\n".join(lines))
@@ -2233,13 +2228,13 @@ def run_gui() -> int:
         def _scout_create_case(self) -> None:
             record = self._scout_selected_record()
             if record is None:
-                self.message_box.showinfo("选择 Issue", "先在列表里选中一个 issue。", parent=self._scout_dialog)
+                self.message_box.showinfo(tr("选择 Issue"), tr("先在列表里选中一个 issue。"), parent=self._scout_dialog)
                 return
             score = self._scout_scores.get(record.number)
             if score is not None and score.taken:
                 if not self.message_box.askyesno(
-                    "可能已有人接手",
-                    f"#{record.number} 疑似已有人在做：\n{score.taken_evidence or '评论中出现 PR/认领迹象'}\n\n仍然要为它创建调查案件吗？（练习调查本身没问题，别提交重复修复即可）",
+                    tr("可能已有人接手"),
+                    tr('#{} 疑似已有人在做：\n{}\n\n仍然要为它创建调查案件吗？（练习调查本身没问题，别提交重复修复即可）').format(record.number, score.taken_evidence or '评论中出现 PR/认领迹象'),
                     parent=self._scout_dialog,
                 ):
                     return
@@ -2261,13 +2256,13 @@ def run_gui() -> int:
                     self._start_create()
                 else:
                     self.show_new_page()
-                    self.progress_var.set("已填入 issue，等当前任务结束后点「开始调查」。")
+                    self.progress_var.set(tr("已填入 issue，等当前任务结束后点「开始调查」。"))
             else:
                 self.bug_text.delete("1.0", "end")
                 self.bug_text.insert("1.0", text)
                 self._set_char_count()
                 self.show_new_page()
-                self.progress_var.set("已填入选中的 issue；请先选择本地 Blender 源码文件夹，再点「开始调查」。")
+                self.progress_var.set(tr("已填入选中的 issue；请先选择本地 Blender 源码文件夹，再点「开始调查」。"))
 
         def _scout_open_browser(self) -> None:
             record = self._scout_selected_record()
@@ -2287,10 +2282,10 @@ def run_gui() -> int:
 
         def _scout_export(self) -> None:
             if not self._scout_records:
-                self.message_box.showinfo("导出", "还没有筛选结果可导出。", parent=self._scout_dialog)
+                self.message_box.showinfo(tr("导出"), tr("还没有筛选结果可导出。"), parent=self._scout_dialog)
                 return
             target = self.file_dialog.asksaveasfilename(
-                title="导出筛选结果", defaultextension=".md",
+                title=tr("导出筛选结果"), defaultextension=".md",
                 initialfile=f"ai-issue-scan-{__import__('datetime').datetime.now().strftime('%Y%m%d-%H%M')}.md",
                 filetypes=[("Markdown", "*.md")], parent=self._scout_dialog,
             )
@@ -2299,15 +2294,15 @@ def run_gui() -> int:
             try:
                 export_scan_markdown(self._scout_records, self._scout_scores, Path(target))
             except OSError as exc:
-                self.message_box.showerror("导出失败", str(exc), parent=self._scout_dialog)
+                self.message_box.showerror(tr("导出失败"), str(exc), parent=self._scout_dialog)
                 return
-            self.message_box.showinfo("导出完成", f"已保存：\n{target}", parent=self._scout_dialog)
+            self.message_box.showinfo(tr("导出完成"), tr('已保存：\n{}').format(target), parent=self._scout_dialog)
 
         # ------------------------------------------------------- 密钥导入
         def _import_api_key_dialog(self, provider: LLMProviderConfig) -> None:
             """图形化导入 API 密钥（零命令行）。存入钥匙串或本地权限文件，永不进入备份/诊断包。"""
             dialog = tk.Toplevel(self)
-            dialog.title("导入 API 密钥")
+            dialog.title(tr("导入 API 密钥"))
             dialog.geometry("560x400")
             dialog.minsize(500, 380)
             dialog.configure(background=self.BACKGROUND)
@@ -2316,11 +2311,11 @@ def run_gui() -> int:
             shell = ttk.Frame(dialog, style="App.TFrame", padding=24)
             shell.pack(fill="both", expand=True)
             ttk.Label(shell, text="API KEY", style="Eyebrow.TLabel").pack(anchor="w")
-            ttk.Label(shell, text="导入密钥", style="Title.TLabel", font=self._font("SF Pro Display", 20, "bold")).pack(anchor="w", pady=(4, 6))
+            ttk.Label(shell, text=tr("导入密钥"), style="Title.TLabel", font=self._font("SF Pro Display", 20, "bold")).pack(anchor="w", pady=(4, 6))
             ttk.Label(shell, text=f"{provider.label} · {provider.model}", style="Status.TLabel").pack(anchor="w")
             ttk.Label(
                 shell,
-                text="密钥将保存在" + storage_hint() + "，\n不会写入 providers.json、备份、诊断包或统计上报；也可以随时在这里删除。",
+                text=tr("密钥将保存在") + storage_hint() + tr("，\n不会写入 providers.json、备份、诊断包或统计上报；也可以随时在这里删除。"),
                 style="Muted.TLabel", justify="left",
             ).pack(anchor="w", pady=(10, 12))
             entry = tk.Entry(
@@ -2334,26 +2329,26 @@ def run_gui() -> int:
                 entry.insert(0, existing)
             entry.pack(fill="x", ipady=6)
             entry.focus_set()
-            status_var = tk.StringVar(value="已存在导入的密钥，可直接覆盖更新。" if existing else "")
+            status_var = tk.StringVar(value=tr("已存在导入的密钥，可直接覆盖更新。") if existing else "")
             ttk.Label(shell, textvariable=status_var, style="PageStatus.TLabel", justify="left").pack(anchor="w", pady=(8, 0))
 
             def save_and_test() -> None:
                 value = entry.get().strip()
                 if not value:
-                    status_var.set("请先粘贴密钥。")
+                    status_var.set(tr("请先粘贴密钥。"))
                     return
                 try:
                     mode_used = save_key(provider.id, value)
                 except Exception as exc:
-                    status_var.set(f"保存失败：{exc}")
+                    status_var.set(tr('保存失败：{}').format(exc))
                     return
-                status_var.set(f"已保存（{storage_hint() if mode_used == 'file' else 'macOS 钥匙串'}），正在测试连接……")
+                status_var.set(tr('已保存（{}），正在测试连接……').format(storage_hint() if mode_used == 'file' else 'macOS 钥匙串'))
 
                 def work() -> None:
                     ok, message = test_connection(provider)
 
                     def apply() -> None:
-                        status_var.set(("✅ 密钥已保存，连接成功" if ok else "❌ ") + message)
+                        status_var.set((tr("✅ 密钥已保存，连接成功") if ok else "❌ ") + message)
 
                     self._main_queue.put(apply)
 
@@ -2362,20 +2357,20 @@ def run_gui() -> int:
             def remove_key() -> None:
                 delete_key(provider.id)
                 entry.delete(0, "end")
-                status_var.set("已删除本地存储的密钥。")
+                status_var.set(tr("已删除本地存储的密钥。"))
 
             row = ttk.Frame(shell, style="App.TFrame")
             row.pack(fill="x", pady=(16, 0))
-            ttk.Button(row, text="取消", command=dialog.destroy, style="Ghost.TButton").pack(side="right")
-            ttk.Button(row, text="保存并测试  →", command=save_and_test, style="Primary.TButton").pack(side="right", padx=(0, 8))
+            ttk.Button(row, text=tr("取消"), command=dialog.destroy, style="Ghost.TButton").pack(side="right")
+            ttk.Button(row, text=tr("保存并测试  →"), command=save_and_test, style="Primary.TButton").pack(side="right", padx=(0, 8))
             if existing:
-                ttk.Button(row, text="删除已存密钥", command=remove_key, style="Ghost.TButton").pack(side="left")
+                ttk.Button(row, text=tr("删除已存密钥"), command=remove_key, style="Ghost.TButton").pack(side="left")
             dialog.bind("<Return>", lambda _e: save_and_test())
 
         # -------------------------------------------------------------- 设置
         def _open_settings(self) -> None:
             dialog = tk.Toplevel(self)
-            dialog.title("设置")
+            dialog.title(tr("设置"))
             dialog.geometry("620x560")
             dialog.minsize(560, 520)
             dialog.configure(background=self.BACKGROUND)
@@ -2384,14 +2379,43 @@ def run_gui() -> int:
             shell = ttk.Frame(dialog, style="App.TFrame", padding=24)
             shell.pack(fill="both", expand=True)
             ttk.Label(shell, text="SETTINGS", style="Eyebrow.TLabel").pack(anchor="w")
-            ttk.Label(shell, text="设置", style="Title.TLabel", font=self._font("SF Pro Display", 22, "bold")).pack(anchor="w", pady=(4, 10))
-            ttk.Label(shell, text=f"BugCompass v{__version__} · 设置保存在本地（~/.bugcompass/settings.json）", style="Muted.TLabel").pack(anchor="w", pady=(0, 14))
+            ttk.Label(shell, text=tr("设置"), style="Title.TLabel", font=self._font("SF Pro Display", 22, "bold")).pack(anchor="w", pady=(4, 10))
+            ttk.Label(shell, text=tr('BugCompass v{} · 设置保存在本地（~/.bugcompass/settings.json）').format(__version__), style="Muted.TLabel").pack(anchor="w", pady=(0, 14))
+
+            # 界面语言
+            language_card = ttk.LabelFrame(shell, text=tr("界面语言"), style="Dark.TLabelframe", padding=14)
+            language_card.pack(fill="x", pady=(0, 12))
+            language_names = {"zh": "中文", "en": "English"}
+            current_code = str(self.settings.get("language", "zh"))
+            language_var = tk.StringVar(value=language_names.get(current_code, "中文"))
+
+            def change_language(*_args: Any) -> None:
+                code = "en" if language_var.get() == "English" else "zh"
+                if code == str(self.settings.get("language", "zh")):
+                    return
+                self.settings["language"] = code
+                save_settings(self.settings)
+                set_language(code)
+                self.message_box.showinfo(
+                    tr("设置"),
+                    tr("语言已切换。重启 BugCompass 后全部界面生效。"),
+                    parent=dialog,
+                )
+
+            language_menu = tk.OptionMenu(language_card, language_var, *language_names.values(), command=change_language)
+            language_menu.configure(
+                background=self.SURFACE_ALT, foreground=self.TEXT,
+                activebackground=self.BORDER, activeforeground=self.TEXT,
+                highlightthickness=0, bd=0, font=("SF Pro Text", 11),
+            )
+            language_menu.pack(side="left")
+            ttk.Label(language_card, text=tr("切换后重启应用即可完全生效。"), style="Muted.TLabel").pack(side="left", padx=(12, 0))
 
             # 界面缩放
             zoom_box = ttk.Frame(shell, style="Surface.TFrame", padding=14)
             zoom_box.pack(fill="x")
-            ttk.Label(zoom_box, text="界面缩放", style="Heading.TLabel").pack(anchor="w")
-            ttk.Label(zoom_box, text=f"当前系统 DPI 缩放：约 {scale_percent(self)}%。使用 Ctrl + 滚轮 也可以随时调整。", style="Muted.TLabel").pack(anchor="w", pady=(3, 8))
+            ttk.Label(zoom_box, text=tr("界面缩放"), style="Heading.TLabel").pack(anchor="w")
+            ttk.Label(zoom_box, text=tr('当前系统 DPI 缩放：约 {}%。使用 Ctrl + 滚轮 也可以随时调整。').format(scale_percent(self)), style="Muted.TLabel").pack(anchor="w", pady=(3, 8))
             zoom_var = tk.IntVar(value=self.ui_scale.percent)
             zoom_label = ttk.Label(zoom_box, text=f"{self.ui_scale.percent}%", style="Status.TLabel")
             zoom_label.pack(anchor="w")
@@ -2407,13 +2431,13 @@ def run_gui() -> int:
             # 模型服务（API）
             llm_box = ttk.Frame(shell, style="Surface.TFrame", padding=14)
             llm_box.pack(fill="x", pady=(10, 0))
-            ttk.Label(llm_box, text="模型服务（API 调查引擎）", style="Heading.TLabel").pack(anchor="w")
+            ttk.Label(llm_box, text=tr("模型服务（API 调查引擎）"), style="Heading.TLabel").pack(anchor="w")
             if self.llm_provider_error:
-                ttk.Label(llm_box, text=f"配置读取失败：{self.llm_provider_error}", style="Status.TLabel", justify="left").pack(anchor="w", pady=(3, 6))
+                ttk.Label(llm_box, text=tr('配置读取失败：{}').format(self.llm_provider_error), style="Status.TLabel", justify="left").pack(anchor="w", pady=(3, 6))
             ttk.Label(
                 llm_box,
-                text="密钥只从环境变量读取，永不写入文件、备份或诊断包。\n"
-                     "providers.json 只保存端点、模型名和「密钥环境变量名」。",
+                text=tr("密钥只从环境变量读取，永不写入文件、备份或诊断包。\n"
+                     "providers.json 只保存端点、模型名和「密钥环境变量名」。"),
                 style="Muted.TLabel", justify="left",
             ).pack(anchor="w", pady=(3, 8))
             if self.llm_providers:
@@ -2421,7 +2445,7 @@ def run_gui() -> int:
                 llm_row = ttk.Frame(llm_box, style="Surface.TFrame")
                 llm_row.pack(fill="x")
                 self._llm_test_var = tk.StringVar(value=provider_names[0])
-                ttk.Label(llm_row, text="服务", style="Muted.TLabel").pack(side="left", padx=(0, 6))
+                ttk.Label(llm_row, text=tr("服务"), style="Muted.TLabel").pack(side="left", padx=(0, 6))
                 provider_combo = tk.OptionMenu(llm_row, self._llm_test_var, *provider_names)
                 provider_combo.configure(
                     background=self.SURFACE_ALT, foreground=self.TEXT,
@@ -2440,7 +2464,7 @@ def run_gui() -> int:
 
                 def run_test() -> None:
                     provider = chosen_provider()
-                    self._llm_status_var.set(f"正在测试 {provider.display_name}……")
+                    self._llm_status_var.set(tr('正在测试 {}……').format(provider.display_name))
 
                     def work() -> None:
                         ok, message = test_connection(provider)
@@ -2456,41 +2480,41 @@ def run_gui() -> int:
                     save_settings(self.settings)
                     if hasattr(self, "engine_combo"):
                         self.engine_var.set(provider.display_name)
-                    self._llm_status_var.set(f"已设为当前引擎：{provider.display_name}")
+                    self._llm_status_var.set(tr('已设为当前引擎：{}').format(provider.display_name))
 
-                ttk.Button(llm_row, text="测试连接", command=run_test, style="Action.TButton").pack(side="left", padx=(10, 0))
-                ttk.Button(llm_row, text="设为当前引擎", command=use_provider, style="Action.TButton").pack(side="left", padx=(8, 0))
+                ttk.Button(llm_row, text=tr("测试连接"), command=run_test, style="Action.TButton").pack(side="left", padx=(10, 0))
+                ttk.Button(llm_row, text=tr("设为当前引擎"), command=use_provider, style="Action.TButton").pack(side="left", padx=(8, 0))
                 if chosen_provider().needs_key:
-                    ttk.Button(llm_row, text="导入密钥…", command=lambda: self._import_api_key_dialog(chosen_provider()), style="Primary.TButton").pack(side="left", padx=(8, 0))
+                    ttk.Button(llm_row, text=tr("导入密钥…"), command=lambda: self._import_api_key_dialog(chosen_provider()), style="Primary.TButton").pack(side="left", padx=(8, 0))
                 chosen = chosen_provider()
                 if chosen.needs_key:
-                    stored = "已导入 ✓" if get_key(chosen.id) else "未导入"
-                    key_hint = f"密钥：{stored} · 环境变量名 {chosen.api_key_env} · 存储：{storage_hint()}"
+                    stored = tr("已导入 ✓") if get_key(chosen.id) else tr("未导入")
+                    key_hint = tr('密钥：{} · 环境变量名 {} · 存储：{}').format(stored, chosen.api_key_env, storage_hint())
                 else:
-                    key_hint = "本地服务，无需密钥"
+                    key_hint = tr("本地服务，无需密钥")
                 ttk.Label(llm_box, text=key_hint, style="Muted.TLabel").pack(anchor="w", pady=(4, 2))
             else:
-                ttk.Label(llm_box, text="没有可用服务：运行 bugcompass llm init-config 生成配置模板后重开设置。", style="Muted.TLabel", justify="left").pack(anchor="w")
+                ttk.Label(llm_box, text=tr("没有可用服务：运行 bugcompass llm init-config 生成配置模板后重开设置。"), style="Muted.TLabel", justify="left").pack(anchor="w")
 
             # 统计上报（默认关闭）
             tele_box = ttk.Frame(shell, style="Surface.TFrame", padding=14)
             tele_box.pack(fill="x", pady=(10, 0))
-            ttk.Label(tele_box, text="统计上报", style="Heading.TLabel").pack(anchor="w")
+            ttk.Label(tele_box, text=tr("统计上报"), style="Heading.TLabel").pack(anchor="w")
             ttk.Label(
                 tele_box,
-                text="默认关闭。开启后也只会在本地记录聚合计数（模型、耗时、轮次、token、成本），\n"
-                     "不会记录问题描述、证据、源码路径或文件内容；数据只有在“导出待发数据”后才可能离开本机。",
+                text=tr("默认关闭。开启后也只会在本地记录聚合计数（模型、耗时、轮次、token、成本），\n"
+                     "不会记录问题描述、证据、源码路径或文件内容；数据只有在“导出待发数据”后才可能离开本机。"),
                 style="Muted.TLabel", justify="left",
             ).pack(anchor="w", pady=(3, 8))
             tele_var = tk.BooleanVar(value=telemetry_enabled())
             tk.Checkbutton(
-                tele_box, text="我了解并主动开启本地统计记录", variable=tele_var,
+                tele_box, text=tr("我了解并主动开启本地统计记录"), variable=tele_var,
                 background=self.SURFACE, foreground=self.TEXT,
                 activebackground=self.SURFACE, activeforeground=self.TEXT,
                 selectcolor=self.SURFACE_ALT, anchor="w",
             ).pack(anchor="w")
             pending_count = len(telemetry_pending())
-            ttk.Label(tele_box, text=f"本地待发事件：{pending_count} 条", style="Muted.TLabel").pack(anchor="w", pady=(6, 4))
+            ttk.Label(tele_box, text=tr('本地待发事件：{} 条').format(pending_count), style="Muted.TLabel").pack(anchor="w", pady=(6, 4))
             tele_row = ttk.Frame(tele_box, style="Surface.TFrame")
             tele_row.pack(anchor="w")
 
@@ -2499,25 +2523,25 @@ def run_gui() -> int:
 
                 target = export_telemetry_pending(user_root())
                 self.message_box.showinfo(
-                    "导出待发数据",
-                    f"已导出到：\n{target}\n\n请自行检查内容后再决定是否发送。" if target else "当前没有待发事件。",
+                    tr("导出待发数据"),
+                    tr('已导出到：\n{}\n\n请自行检查内容后再决定是否发送。').format(target) if target else tr("当前没有待发事件。"),
                     parent=dialog,
                 )
 
             def clear_tele() -> None:
                 removed = clear_telemetry_pending()
-                self.message_box.showinfo("清空待发数据", f"已清空 {removed} 条本地待发事件。", parent=dialog)
+                self.message_box.showinfo(tr("清空待发数据"), tr('已清空 {} 条本地待发事件。').format(removed), parent=dialog)
 
-            ttk.Button(tele_row, text="导出待发数据", command=export_tele, style="Action.TButton").pack(side="left")
-            ttk.Button(tele_row, text="清空待发数据", command=clear_tele, style="Ghost.TButton").pack(side="left", padx=(8, 0))
+            ttk.Button(tele_row, text=tr("导出待发数据"), command=export_tele, style="Action.TButton").pack(side="left")
+            ttk.Button(tele_row, text=tr("清空待发数据"), command=clear_tele, style="Ghost.TButton").pack(side="left", padx=(8, 0))
 
             # 数据目录
             data_row = ttk.Frame(shell, style="App.TFrame")
             data_row.pack(fill="x", pady=(14, 0))
             from .resources import logs_dir, user_root
 
-            ttk.Label(data_row, text=f"数据目录：{user_root()}", style="Muted.TLabel").pack(side="left")
-            ttk.Button(data_row, text="打开", command=lambda: self._open_path_in_explorer(logs_dir()), style="Ghost.TButton").pack(side="left", padx=(8, 0))
+            ttk.Label(data_row, text=tr('数据目录：{}').format(user_root()), style="Muted.TLabel").pack(side="left")
+            ttk.Button(data_row, text=tr("打开"), command=lambda: self._open_path_in_explorer(logs_dir()), style="Ghost.TButton").pack(side="left", padx=(8, 0))
 
             def save() -> None:
                 percent = int(zoom_var.get())
@@ -2534,18 +2558,18 @@ def run_gui() -> int:
 
             row = ttk.Frame(shell, style="App.TFrame")
             row.pack(fill="x", pady=(16, 0))
-            ttk.Button(row, text="取消", command=dialog.destroy, style="Ghost.TButton").pack(side="right")
-            ttk.Button(row, text="保存  →", command=save, style="Primary.TButton").pack(side="right", padx=(0, 8))
+            ttk.Button(row, text=tr("取消"), command=dialog.destroy, style="Ghost.TButton").pack(side="right")
+            ttk.Button(row, text=tr("保存  →"), command=save, style="Primary.TButton").pack(side="right", padx=(0, 8))
 
         def _refresh_current_case(self) -> None:
             if self.current_case is None:
                 return
             try:
                 self._show_case(self.controller.load_case(self.current_case.case_id))
-                self.copy_status_var.set("结果已刷新。")
+                self.copy_status_var.set(tr("结果已刷新。"))
                 self._refresh_recent_cases()
             except BugCompassError as exc:
-                self.message_box.showerror("刷新失败", str(exc), parent=self)
+                self.message_box.showerror(tr("刷新失败"), str(exc), parent=self)
 
         def _copy_instruction(self) -> None:
             if self.current_case is None:
@@ -2556,13 +2580,13 @@ def run_gui() -> int:
                 self.clipboard_append(instruction)
                 self.update_idletasks()
             except tk.TclError as exc:
-                self.message_box.showerror("复制失败", f"无法访问系统剪贴板：{exc}", parent=self)
+                self.message_box.showerror(tr("复制失败"), tr('无法访问系统剪贴板：{}').format(exc), parent=self)
                 return
-            self.copy_status_var.set("调查指令已复制，请粘贴到当前 BugCompass 项目的 Codex 新任务中。")
+            self.copy_status_var.set(tr("调查指令已复制，请粘贴到当前 BugCompass 项目的 Codex 新任务中。"))
 
         def _new_another(self) -> None:
             if self.busy:
-                self.message_box.showwarning("调查仍在进行", "请先等待调查完成，或在正在运行的案件中点击“停止 Codex”。", parent=self)
+                self.message_box.showwarning(tr("调查仍在进行"), tr("请先等待调查完成，或在正在运行的案件中点击“停止 Codex”。"), parent=self)
                 return
             self.bug_text.delete("1.0", "end")
             self._set_char_count()
@@ -2576,12 +2600,12 @@ def run_gui() -> int:
                 self._hide_details()
             else:
                 self.details_frame.grid(row=3, column=0, sticky="ew")
-                self.details_button.configure(text="收起详细环境信息")
+                self.details_button.configure(text=tr("收起详细环境信息"))
                 self.details_visible = True
 
         def _hide_details(self) -> None:
             self.details_frame.grid_remove()
-            self.details_button.configure(text="显示详细环境信息")
+            self.details_button.configure(text=tr("显示详细环境信息"))
             self.details_visible = False
 
         def _refresh_recent_cases(self) -> None:
@@ -2589,21 +2613,21 @@ def run_gui() -> int:
             recent = self.controller.recent_cases()
             self.recent_case_ids = [item.case_id for item in recent]
             if not recent:
-                self.recent_list.insert("end", "暂无案件")
+                self.recent_list.insert("end", tr("暂无案件"))
                 return
             status_names = {
-                "new": "新建",
-                "investigating": "调查中",
-                "complete": "已完成",
-                "failed": "失败",
-                "cancelled": "已取消",
+                "new": tr("新建"),
+                "investigating": tr("调查中"),
+                "complete": tr("已完成"),
+                "failed": tr("失败"),
+                "cancelled": tr("已取消"),
             }
             for item in recent:
                 created = item.created_at.replace("T", " ").replace("Z", "")
                 if self.codex_active and item.case_id == self.active_case_id:
-                    status = "调查中"
+                    status = tr("调查中")
                 elif item.status == "investigating":
-                    status = "上次中断"
+                    status = tr("上次中断")
                 else:
                     status = status_names.get(item.status, item.status)
                 self.recent_list.insert("end", f"{item.case_id} · {created} · {status}")
@@ -2618,15 +2642,14 @@ def run_gui() -> int:
             try:
                 self._show_case(self.controller.load_case(self.recent_case_ids[index]))
             except BugCompassError as exc:
-                self.message_box.showerror("无法打开案件", str(exc), parent=self)
+                self.message_box.showerror(tr("无法打开案件"), str(exc), parent=self)
 
     try:
         app = BugCompassApp()
     except tk.TclError as exc:
-        detail = str(exc).splitlines()[0] or "Tk 初始化失败"
+        detail = str(exc).splitlines()[0] or tr("Tk 初始化失败")
         print(
-            "错误：无法启动图形界面。Tkinter 模块已安装，但 Tk 运行环境或图形显示不可用。"
-            f"请换用带完整 Tk 支持的 Python，并在本地图形桌面中启动。详情：{detail}"
+            tr('错误：无法启动图形界面。Tkinter 模块已安装，但 Tk 运行环境或图形显示不可用。请换用带完整 Tk 支持的 Python，并在本地图形桌面中启动。详情：{}').format(detail)
         )
         return 2
     app.mainloop()
