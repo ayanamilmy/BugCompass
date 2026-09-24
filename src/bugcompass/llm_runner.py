@@ -46,6 +46,7 @@ SEARCH_MAX_FILE_BYTES = 1024 * 1024
 ISSUE_MAX_CHARS = 12000
 SKILL_MAX_CHARS = 9000
 STATE_MAX_CHARS = 6000
+FINAL_MAX_TOKENS = 8192
 PRUNE_DIRS = {".git", "build", "__pycache__", ".cache", "node_modules", ".venv"}
 
 BINARY_SUFFIXES = {
@@ -198,6 +199,7 @@ class LLMInvestigator:
         deadline = started.timestamp() + self.total_budget_seconds
         rounds = 0
         final_content = ""
+        final_finish_reason = ""
         error_detail = ""
         timed_out = False
 
@@ -226,7 +228,8 @@ class LLMInvestigator:
             totals["input_tokens"] += response.usage.get("input_tokens", 0)
             totals["output_tokens"] += response.usage.get("output_tokens", 0)
             totals["cached_input_tokens"] += response.usage.get("cached_input_tokens", 0)
-            log({"type": "turn.completed", "round": rounds, "usage": dict(response.usage)})
+            log({"type": "turn.completed", "round": rounds, "usage": dict(response.usage),
+                 "finish_reason": response.finish_reason})
 
             if response.tool_calls:
                 messages.append(
@@ -252,15 +255,28 @@ class LLMInvestigator:
                 continue
 
             final_content = response.content or ""
+            final_finish_reason = response.finish_reason
             break
 
         # 轮次用尽但还没拿到最终答案：强制一次无工具请求，只要 JSON。
         if not final_content and not error_detail and not timed_out and not self._cancel.is_set():
             try:
-                response = chat_completion(self.provider, messages, api_key=api_key, tools=None)
+                final_messages = messages + [{
+                    "role": "user",
+                    "content": "源码检查已结束。请根据已获得的证据，直接输出紧凑、完整的 investigation JSON 对象。"
+                    "必须恰好包含 3 条调查路径；简要填写文字字段，不要重复源码片段或输出解释。",
+                }]
+                response = chat_completion(
+                    self.provider, final_messages, api_key=api_key, tools=None,
+                    max_tokens=FINAL_MAX_TOKENS,
+                )
                 totals["input_tokens"] += response.usage.get("input_tokens", 0)
                 totals["output_tokens"] += response.usage.get("output_tokens", 0)
+                totals["cached_input_tokens"] += response.usage.get("cached_input_tokens", 0)
+                log({"type": "final.completed", "finish_reason": response.finish_reason,
+                     "usage": dict(response.usage)})
                 final_content = response.content or ""
+                final_finish_reason = response.finish_reason
             except LLMError as exc:
                 error_detail = str(exc)
 
@@ -294,18 +310,34 @@ class LLMInvestigator:
                 progress(f"{self.provider.label} 已完成调查，正在刷新结果……")
             return True
 
-        updated = try_finalize(final_content or "")
+        # finish_reason=length 表示服务端已截断回复，即使其中恰好有一个可解析的
+        # JSON 片段也不能当作完整调查结果写盘。
+        updated = final_finish_reason != "length" and try_finalize(final_content or "")
+        if final_finish_reason == "length":
+            detail_tail = "\n结构化结果无效：模型回复达到输出长度上限，JSON 不完整。"
         if not updated and not self._cancel.is_set():
-            # 模型偶尔用寒暄/围栏包裹 JSON：带上原回复要求重发一次纯 JSON。
+            # 截断或格式错误时，保留调查上下文，要求模型重发紧凑的完整 JSON。
             try:
                 retry_messages = messages + [
                     {"role": "assistant", "content": (final_content or "")[:4000]},
-                    {"role": "user", "content": "上一条回复无法解析为 JSON。请重新输出完整的 JSON 对象：不要解释、不要前言、不要 Markdown 围栏，也不要任何工具调用标记或工具调用文本（如 <|DSML|>）。"},
+                    {"role": "user", "content": "上一条回复无效（" + detail_tail.strip() + "）。"
+                     "请根据前面的源码检查结果重新输出完整的 investigation JSON 对象，"
+                     "恰好包含 3 条调查路径。简要填写文字字段，避免重复长段源码；"
+                     "不要解释、前言、Markdown 围栏，也不要任何工具调用标记或工具调用文本（如 <|DSML|>）。"},
                 ]
-                response = chat_completion(self.provider, retry_messages, api_key=api_key, tools=None)
+                response = chat_completion(
+                    self.provider, retry_messages, api_key=api_key, tools=None,
+                    max_tokens=FINAL_MAX_TOKENS,
+                )
                 totals["input_tokens"] += response.usage.get("input_tokens", 0)
                 totals["output_tokens"] += response.usage.get("output_tokens", 0)
-                updated = try_finalize(response.content or "")
+                totals["cached_input_tokens"] += response.usage.get("cached_input_tokens", 0)
+                log({"type": "retry.completed", "finish_reason": response.finish_reason,
+                     "usage": dict(response.usage)})
+                if response.finish_reason == "length":
+                    detail_tail = "\n结构化结果无效：纠偏回复仍达到输出长度上限，JSON 不完整。"
+                else:
+                    updated = try_finalize(response.content or "")
             except LLMError as exc:
                 detail_tail += f"\n纠偏重试失败：{exc}"
 
@@ -546,7 +578,7 @@ class LLMInvestigator:
                     continue
                 for number, line in enumerate(text.splitlines(), 1):
                     if regex.search(line):
-                        relative = path.relative_to(repo_root).as_posix()
+                        relative = path.relative_to(repo_root.resolve()).as_posix()
                         matches.append(f"{relative}:{number}: {line.strip()[:200]}")
                         if len(matches) >= SEARCH_MAX_MATCHES:
                             return self._format_matches(matches, pattern, True)
