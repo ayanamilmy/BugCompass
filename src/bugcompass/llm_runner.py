@@ -293,20 +293,45 @@ class LLMInvestigator:
         # 解析 + 落盘（与 CodexRunner 相同的后处理管线）；失败时先纠偏，再尝试最简核心结果。
         detail_tail = ""
         core_only = False
+        partial_sections = False
+        issue_excerpt = self._read_text_limited(Path(view.case_dir) / "issue-original.md", 500)
+        issue_problem = next((line.lstrip("# ").strip() for line in issue_excerpt.splitlines()
+                              if line.lstrip("# ").strip()), "")
 
         def try_finalize(text: str) -> bool:
+            nonlocal detail_tail, partial_sections
+            used_partial = False
             try:
                 previous_path = Path(view.case_dir) / "investigation.json"
                 previous = read_investigation(previous_path) if previous_path.is_file() else empty_investigation(view.case_id)
-                data = self._complete_draft(self._extract_json(text), view.case_id, previous)
-                candidate = validate_investigation(data, require_complete=True)
+                raw = self._extract_json(text)
+                try:
+                    candidate = validate_investigation(
+                        self._complete_draft(raw, view.case_id, previous, fallback_problem=issue_problem),
+                        require_complete=True,
+                    )
+                except (ValueError, TypeError, BugCompassError) as optional_error:
+                    # 三条核心路径有效时，附加实验/因果图的错误不应废掉整次调查。
+                    candidate = validate_investigation(
+                        self._complete_draft(raw, view.case_id, previous, include_optional=False,
+                                             fallback_problem=issue_problem),
+                        require_complete=True,
+                    )
+                    used_partial = True
+                    unknown_ids = {item.get("id") for item in candidate["unknowns"]}
+                    warning_id = next(f"U_output_{n}" for n in range(1, 1000) if f"U_output_{n}" not in unknown_ids)
+                    candidate["unknowns"].append({
+                        "id": warning_id,
+                        "question": "部分附加调查内容格式不完整，需继续调查补充。",
+                        "impact": str(optional_error)[:200],
+                    })
                 merged = merge_user_decisions(previous, candidate)
                 write_investigation(previous_path, merged, require_complete=True)
                 export_markdown(view.case_dir, merged)
-            except (ValueError, KeyError, BugCompassError, OSError, json.JSONDecodeError) as exc:
-                nonlocal detail_tail
+            except (ValueError, TypeError, KeyError, BugCompassError, OSError, json.JSONDecodeError) as exc:
                 detail_tail = f"\n结构化结果无效：{exc}"
                 return False
+            partial_sections = used_partial
             log({"type": "item.completed", "item": {"type": "agent_message", "text": "调查结果已写入 investigation.json"}})
             if progress:
                 progress(f"{self.provider.label} 已完成调查，正在刷新结果……")
@@ -324,7 +349,8 @@ class LLMInvestigator:
                     "role": "user", "content": "上一条回复无效（" + detail_tail.strip() + "）。"
                     "请根据前面的源码检查结果重新输出紧凑的调查 JSON：仅写 summary、"
                     "恰好 3 条 hypotheses、evidence、unknowns，以及有依据时的实验、因果图和语义差异。"
-                    "每条路径写明 title、claim、priority、basis、next_step；证据写 kind、source_type 和引用。"
+                    "每条路径写明 title、claim、priority、basis、next_step；证据写 kind、source_type 和引用，"
+                    "来源无法确认时 source_type 写 unknown、kind 写 inference。"
                     "默认值、空字段、时间戳、用户编辑标记由程序补齐。文字尽量简短。"
                     "不要解释、前言、Markdown 围栏，也不要任何工具调用标记或工具调用文本（如 <|DSML|>）。",
                 }]
@@ -350,6 +376,7 @@ class LLMInvestigator:
                         "每条含 id、title、claim、priority、basis、next_step、"
                         "source_references（相对 path 和准确 line）；"
                         "evidence 至多 3 条，每条含 id、kind、statement、source_type、source_references；"
+                        "来源无法确认时 source_type 写 unknown、kind 写 inference。"
                         "unknowns 可为空。不要输出因果图、实验、语义差异、默认字段或解释。"
                         "必须根据刚才读到的源码与报告，不得编造出处。",
                     }]
@@ -377,7 +404,8 @@ class LLMInvestigator:
             view, started, log_path, returncode, False, False,
             ("调查未产生有效结果。" + detail_tail) if not updated else "",
             totals,
-            ("完成（核心路径）" if core_only else "完成") if updated else "结果无效",
+            ("完成（核心路径）" if core_only else "完成（部分内容待核实）" if partial_sections else "完成")
+            if updated else "结果无效",
         )
 
     # ------------------------------------------------------------------ 提示词
@@ -411,6 +439,7 @@ class LLMInvestigator:
             "known_environment、missing_information），hypotheses（恰好 3 条，各含 id、title、claim、"
             "priority、basis、next_step、evidence_ids、source_references、estimated_cost），"
             "evidence（各含 id、kind、statement、source_type、source_references），unknowns。"
+            "来源无法确认时 source_type 写 unknown、kind 写 inference。"
             "引用写相对 path 和准确 line；没有引用时用空数组，不得编造。"
             "有依据时输出 suggested_experiments、causal_graph、semantic_diff；"
             "实验要包含无 shell 的 command 数组、cwd、permission、estimated_seconds。"
@@ -701,14 +730,19 @@ class LLMInvestigator:
         return cls._TOOL_MARKUP_TAG.sub(" ", text)
 
     @staticmethod
-    def _complete_draft(data: dict[str, Any], case_id: str, previous: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _complete_draft(
+        data: dict[str, Any], case_id: str, previous: dict[str, Any] | None = None,
+        *, include_optional: bool = True, fallback_problem: str = "",
+    ) -> dict[str, Any]:
         """补齐固定元数据，不替模型编造调查事实或源码证据。"""
-        def complete_references(references: Any) -> None:
+        def complete_references(references: Any) -> list[dict[str, Any]]:
             if not isinstance(references, list):
-                raise ValueError("source_references 必须是数组。")
+                return []
+            valid: list[dict[str, Any]] = []
             for reference in references:
                 if not isinstance(reference, dict) or not isinstance(reference.get("path"), str) or not reference["path"].strip():
-                    raise ValueError("源码引用必须包含 path。")
+                    continue
+                reference = deepcopy(reference)
                 reference.setdefault("line", None)
                 reference.setdefault("symbol", "")
                 reference.setdefault("note", "")
@@ -716,74 +750,139 @@ class LLMInvestigator:
                     isinstance(reference["line"], bool) or not isinstance(reference["line"], int)
                     or reference["line"] < 1
                 ):
-                    raise ValueError("源码引用的 line 必须是正整数或 null。")
+                    reference["line"] = None
+                valid.append(reference)
+            return valid
 
-        if data.get("case_id", case_id) != case_id:
-            raise ValueError("调查结果的 case_id 与当前 Case 不一致。")
+        # Case ID 属于运行器掌握的元数据，不采信模型自行填写的值。
         result = deepcopy(previous) if previous is not None else empty_investigation(case_id)
         result["schema_version"] = 1
         result["case_id"] = case_id
         if result.get("stage") in (None, "intake"):
             result["stage"] = "paths"
-        for key in ("stage", "summary", "hypotheses", "evidence", "unknowns",
-                    "suggested_experiments", "causal_graph", "semantic_diff"):
+        keys = ["stage", "summary", "hypotheses", "evidence", "unknowns"]
+        if include_optional:
+            keys.extend(("suggested_experiments", "causal_graph", "semantic_diff"))
+        for key in keys:
             if key in data:
                 if key in ("summary", "semantic_diff") and isinstance(data[key], dict) and isinstance(result[key], dict):
                     result[key].update(deepcopy(data[key]))
                 else:
                     result[key] = deepcopy(data[key])
+        if not isinstance(result.get("stage"), str) or result["stage"] not in {
+            "intake", "investigating", "paths", "experiment", "conclusion"
+        }:
+            result["stage"] = "paths"
 
         summary = result["summary"]
+        if isinstance(summary, dict) and not summary.get("problem") and fallback_problem:
+            summary["problem"] = fallback_problem[:200]
         if not isinstance(summary, dict) or not isinstance(summary.get("problem"), str) or not summary["problem"].strip():
             raise ValueError("调查摘要缺少 problem。")
         for key in ("expected_behavior", "actual_behavior"):
             summary.setdefault(key, "")
             if not isinstance(summary[key], str):
-                raise ValueError(f"调查摘要的 {key} 必须是文字。")
+                summary[key] = ""
         for key in ("reproduction_steps", "known_environment", "missing_information"):
             summary.setdefault(key, [])
+            if isinstance(summary[key], str):
+                summary[key] = [summary[key]] if summary[key].strip() else []
             if not isinstance(summary[key], list) or not all(isinstance(value, str) for value in summary[key]):
-                raise ValueError(f"调查摘要的 {key} 必须是文字数组。")
+                summary[key] = []
 
         hypotheses = result["hypotheses"]
         if not isinstance(hypotheses, list) or len(hypotheses) != 3:
             raise ValueError("完成的调查结果必须恰好包含 3 条路径。")
-        for item in hypotheses:
-            if not isinstance(item, dict) or not all(
-                isinstance(item.get(key), str) and item[key].strip()
-                for key in ("id", "title", "claim", "next_step")
-            ):
-                raise ValueError("每条调查路径都必须有 id、title、claim 和 next_step。")
+        seen_hypothesis_ids: set[str] = set()
+        for index, item in enumerate(hypotheses, 1):
+            if not isinstance(item, dict) or not isinstance(item.get("claim"), str) or not item["claim"].strip():
+                raise ValueError("每条调查路径都必须有明确的 claim。")
+            if not isinstance(item.get("id"), str) or not item["id"].strip() or item["id"] in seen_hypothesis_ids:
+                item["id"] = f"H_model_{index}"
+            seen_hypothesis_ids.add(item["id"])
+            if not isinstance(item.get("title"), str) or not item["title"].strip():
+                item["title"] = item["claim"][:40]
+            if not isinstance(item.get("next_step"), str) or not item["next_step"].strip():
+                item["next_step"] = "核对这条路径的证据与源码位置。"
+            if not isinstance(item.get("priority"), str) or item["priority"] not in {"high", "medium", "low"}:
+                item["priority"] = ("high", "medium", "low")[index - 1]
             item.setdefault("status", "active")
+            if not isinstance(item["status"], str) or item["status"] not in {"active", "rejected", "supported", "weakened"}:
+                item["status"] = "active"
             item.setdefault("basis", [])
+            if isinstance(item["basis"], str):
+                item["basis"] = [item["basis"]] if item["basis"].strip() else []
+            if not isinstance(item["basis"], list):
+                item["basis"] = []
+            item["basis"] = [value for value in item["basis"] if isinstance(value, str) and value.strip()]
             item.setdefault("evidence_ids", [])
             item.setdefault("source_references", [])
-            complete_references(item["source_references"])
+            item["source_references"] = complete_references(item["source_references"])
             for key in ("supporting_result", "weakening_result", "risk", "user_note"):
                 item.setdefault(key, "")
             # 成本属于判断，缺少时明确标记尚未评估，避免误称低成本。
-            if "estimated_cost" not in item:
+            if not isinstance(item.get("estimated_cost"), str) or item["estimated_cost"] not in {"low", "medium", "high"}:
                 item["estimated_cost"] = "medium"
                 item["risk"] = (item["risk"] + "；" if item["risk"] else "") + "成本尚未评估"
 
-        for key in ("evidence", "unknowns", "suggested_experiments"):
+        for key in ("evidence", "unknowns"):
             if not isinstance(result[key], list):
-                raise ValueError(f"{key} 必须是数组。")
-        for item in result["evidence"]:
-            if not isinstance(item, dict) or not all(
-                isinstance(item.get(key), str) and item[key].strip() for key in ("id", "statement")
-            ):
-                raise ValueError("每条证据都必须有 id 和 statement。")
-            item.setdefault("source_references", [])
-            complete_references(item["source_references"])
-            if item.get("source_type") not in {"issue", "environment", "source", "git"}:
-                raise ValueError("每条证据都必须明确 source_type。")
-        for item in result["unknowns"]:
-            if not isinstance(item, dict) or not all(
-                isinstance(item.get(key), str) and item[key].strip() for key in ("id", "question")
-            ):
-                raise ValueError("每条未知信息都必须有 id 和 question。")
+                result[key] = []
+        if not isinstance(result["suggested_experiments"], list):
+            raise ValueError("suggested_experiments 必须是数组。")
+        normalized_unknowns: list[dict[str, Any]] = []
+        for index, raw in enumerate(result["unknowns"], 1):
+            item = {"question": raw} if isinstance(raw, str) else raw
+            if not isinstance(item, dict) or not isinstance(item.get("question"), str) or not item["question"].strip():
+                continue
+            if not isinstance(item.get("id"), str) or not item["id"].strip():
+                item["id"] = f"U_model_{index}"
             item.setdefault("impact", "")
+            normalized_unknowns.append(item)
+        result["unknowns"] = normalized_unknowns
+        unknown_ids = {item.get("id") for item in result["unknowns"] if isinstance(item, dict)}
+
+        def note_uncertain(index: int, question: str, impact: str) -> None:
+            warning_id = f"U_source_{index}"
+            if warning_id not in unknown_ids:
+                result["unknowns"].append({"id": warning_id, "question": question, "impact": impact})
+                unknown_ids.add(warning_id)
+
+        normalized_evidence: list[dict[str, Any]] = []
+        for index, raw in enumerate(result["evidence"], 1):
+            item = {"statement": raw} if isinstance(raw, str) else raw
+            if not isinstance(item, dict) or not isinstance(item.get("statement"), str) or not item["statement"].strip():
+                note_uncertain(index, "模型返回了一条缺少陈述内容的证据，需重新核实。", "该条证据未保存。")
+                continue
+            if not isinstance(item.get("id"), str) or not item["id"].strip():
+                item["id"] = f"E_model_{index}"
+            item.setdefault("source_references", [])
+            item["source_references"] = complete_references(item["source_references"])
+            if not isinstance(item.get("kind"), str) or item["kind"] not in {"fact", "inference"}:
+                item["kind"] = "inference"
+                note_uncertain(index, f"证据 {item['id']} 是事实还是推测？", "分类不明确，暂按推测处理。")
+            if not isinstance(item.get("source_type"), str) or item["source_type"] not in {"issue", "environment", "source", "git"}:
+                # 来源不明不能冒充事实；保留模型的陈述供用户核实。
+                item["source_type"] = "unknown"
+                item["kind"] = "inference"
+                note_uncertain(index, f"证据 {item['id']} 的来源是什么？",
+                               "该陈述暂按推测处理，不能作为已核实事实。")
+            elif item.get("kind") == "fact" and item["source_type"] in {"source", "git"} and not any(
+                isinstance(ref.get("line"), int) for ref in item["source_references"]
+            ):
+                item["kind"] = "inference"
+                note_uncertain(index, f"证据 {item['id']} 的源码或 Git 引用在哪里？",
+                               "缺少可核对出处，暂按推测处理。")
+            normalized_evidence.append(item)
+        result["evidence"] = normalized_evidence
+        evidence_ids = {item["id"] for item in normalized_evidence}
+        for item in hypotheses:
+            if not isinstance(item["evidence_ids"], list):
+                item["evidence_ids"] = []
+            item["evidence_ids"] = [value for value in item["evidence_ids"] if isinstance(value, str) and value in evidence_ids]
+
+        if not include_optional:
+            return result
 
         for item in result["suggested_experiments"]:
             if not isinstance(item, dict) or not isinstance(item.get("command"), list) or not item["command"]:
@@ -825,7 +924,7 @@ class LLMInvestigator:
             defaults = empty_investigation(case_id)["semantic_diff"]
             for key, value in defaults.items():
                 semantic.setdefault(key, deepcopy(value))
-            complete_references(semantic["source_references"])
+            semantic["source_references"] = complete_references(semantic["source_references"])
         return result
 
     @classmethod
