@@ -2345,8 +2345,6 @@ def run_gui() -> int:
             """图形化导入 API 密钥（零命令行）。存入钥匙串或本地权限文件，永不进入备份/诊断包。"""
             dialog = tk.Toplevel(self)
             dialog.title(tr("导入 API 密钥"))
-            dialog.geometry("560x400")
-            dialog.minsize(500, 380)
             dialog.configure(background=self.BACKGROUND)
             dialog.transient(self)
             dialog.grab_set()
@@ -2409,13 +2407,20 @@ def run_gui() -> int:
             if existing:
                 ttk.Button(row, text=tr("删除已存密钥"), command=remove_key, style="Ghost.TButton").pack(side="left")
             dialog.bind("<Return>", lambda _e: save_and_test())
+            self._fit_dialog(dialog, 580, 420)
+
+        def _fit_dialog(self, dialog: Any, min_width: int, min_height: int) -> None:
+            """对话框自动适应内容：内容多时放大到装得下（不再裁掉底部按钮），超出屏幕则封顶。"""
+            dialog.update_idletasks()
+            width = max(min_width, dialog.winfo_reqwidth())
+            height = min(max(min_height, dialog.winfo_reqheight() + 12), dialog.winfo_screenheight() - 80)
+            dialog.geometry(f"{width}x{height}")
+            dialog.minsize(min_width, min_height)
 
         # -------------------------------------------------------------- 设置
         def _open_settings(self) -> None:
             dialog = tk.Toplevel(self)
             dialog.title(tr("设置"))
-            dialog.geometry("620x560")
-            dialog.minsize(560, 520)
             dialog.configure(background=self.BACKGROUND)
             dialog.transient(self)
             dialog.grab_set()
@@ -2606,6 +2611,7 @@ def run_gui() -> int:
             row.pack(fill="x", pady=(16, 0))
             ttk.Button(row, text=tr("取消"), command=dialog.destroy, style="Ghost.TButton").pack(side="right")
             ttk.Button(row, text=tr("保存  →"), command=save, style="Primary.TButton").pack(side="right", padx=(0, 8))
+            self._fit_dialog(dialog, 640, 560)
 
         def _refresh_current_case(self) -> None:
             if self.current_case is None:

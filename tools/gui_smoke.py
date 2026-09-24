@@ -371,6 +371,12 @@ def main() -> int:
         combos = [w for d in open_dialogs for w in _walk_smoke(d) if isinstance(w, _ttk_smoke.Combobox)]
         check("设置含深色 Combobox 下拉", len(combos) >= 1 and all(str(c.cget("style")) == "Dark.TCombobox" for c in combos))
         for dialog in open_dialogs:
+            dialog.update_idletasks()
+            check(
+                "设置对话框高度足够容纳内容",
+                dialog.winfo_height() >= dialog.winfo_reqheight() - 10,
+                f"{dialog.winfo_height()} < 需要 {dialog.winfo_reqheight()}",
+            )
             dialog.destroy()
 
         # 报告包入口在当前 Case 中可用，且草稿可离线打开。
