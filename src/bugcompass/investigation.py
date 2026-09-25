@@ -12,6 +12,9 @@ from .workspace import BugCompassError, utc_now
 PRIORITIES = {"high", "medium", "low"}
 # 界面展示顺序：高 → 中 → 低；表里没有的优先级一律排到最后。
 PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
+# 界面流程条的五步：描述 → 调查中 → 三条路径 → 实验 → 结论。
+# 取值沿用 investigation.json 里既有的 stage 词表，界面与数据说同一套话。
+FLOW_STEPS = ("intake", "investigating", "paths", "experiment", "conclusion")
 KINDS = {"fact", "inference"}
 CAUSAL_NODE_KINDS = {"trigger", "decision", "state", "failure", "fix", "unknown"}
 CAUSAL_CERTAINTIES = {"fact", "inference", "unknown"}
@@ -66,6 +69,26 @@ def order_hypotheses(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(items, key=sort_key)
 
 
+def flow_step(data: dict[str, Any], *, status: str = "") -> str:
+    """当前案件走到了流程的哪一步，给界面流程条用（纯函数，便于测试）。
+
+    只看「已经产出了什么」加上案件状态，不看模型自报的 stage，
+    所以只前进不后退：深入调查时三条路径仍然摆在屏幕上，流程条不会被推回「调查中」
+    —— 那件事由右上角的运行状态面板负责表达。
+    """
+
+    hypotheses = [item for item in data.get("hypotheses", []) if isinstance(item, dict)]
+    if not hypotheses:
+        return "investigating" if status == "investigating" else "intake"
+    conclusion = data.get("conclusion")
+    if isinstance(conclusion, dict) and str(conclusion.get("statement") or "").strip():
+        return "conclusion"
+    experiments = [item for item in data.get("suggested_experiments", []) if isinstance(item, dict)]
+    if any(str(experiment.get("result") or "").strip() for experiment in experiments):
+        return "experiment"
+    return "paths"
+
+
 def validate_investigation(data: Any, *, require_complete: bool = False) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise BugCompassError("结构化调查结果必须是 JSON 对象。")
@@ -75,6 +98,9 @@ def validate_investigation(data: Any, *, require_complete: bool = False) -> dict
         "semantic_diff",
         {"status": "not_available", "summary": "", "old_rule": "", "new_rule": "", "changed_invariants": [], "affected_paths": [], "remaining_risks": [], "source_references": []},
     )
+    # 「结论」是用户自己写下的收口判断：AI 不产出它，packs 里的输出 schema 也没有它，
+    # 所以旧案件读进来时补 None，写出去时原样保留（见 merge_user_decisions）。
+    data.setdefault("conclusion", None)
     required = {"summary", "hypotheses", "evidence", "unknowns", "suggested_experiments", "causal_graph", "semantic_diff"}
     missing = required.difference(data)
     if missing:
@@ -101,6 +127,12 @@ def validate_investigation(data: Any, *, require_complete: bool = False) -> dict
         references = hypothesis.get("source_references", [])
         if not isinstance(references, list):
             raise BugCompassError(f"调查路径 {hypothesis_id} 的 source_references 必须是数组。")
+    conclusion = data["conclusion"]
+    if conclusion is not None:
+        if not isinstance(conclusion, dict) or not isinstance(conclusion.get("statement"), str) or not conclusion["statement"].strip():
+            raise BugCompassError("conclusion 必须包含非空的 statement。")
+        if conclusion.get("hypothesis_id") not in ids:
+            raise BugCompassError("conclusion 引用了不存在的调查路径。")
     for evidence in data["evidence"]:
         if not isinstance(evidence, dict) or evidence.get("kind") not in KINDS:
             raise BugCompassError("证据必须明确标记为 fact 或 inference。")
@@ -186,6 +218,9 @@ def merge_user_decisions(previous: dict[str, Any], candidate: dict[str, Any]) ->
         if old and old.get("status") == "rejected":
             item["status"] = "rejected"
             item["user_note"] = old.get("user_note", "用户已否定此路径。")
+    # 结论文本同样是用户自己的判断，AI 回写时必须原样保留。
+    if isinstance(previous.get("conclusion"), dict):
+        merged["conclusion"] = deepcopy(previous["conclusion"])
     old_experiments = {item.get("id"): item for item in previous.get("suggested_experiments", []) if isinstance(item, dict)}
     for item in merged.get("suggested_experiments", []):
         old = old_experiments.get(item.get("id"))
@@ -242,6 +277,21 @@ def reject_hypothesis(path: str | Path, hypothesis_id: str, note: str = "用户�
     raise BugCompassError(f"找不到调查路径：{hypothesis_id}")
 
 
+def record_conclusion(path: str | Path, hypothesis_id: str, statement: str) -> dict[str, Any]:
+    """记下用户采信哪条路径、判定的根因是什么：调查从这里收口。"""
+
+    text = statement.strip()
+    if not text:
+        raise BugCompassError("请先用一句话写下你的根因判断。")
+    data = read_investigation(path)
+    if not any(item.get("id") == hypothesis_id for item in data["hypotheses"]):
+        raise BugCompassError(f"找不到调查路径：{hypothesis_id}")
+    data["conclusion"] = {"hypothesis_id": hypothesis_id, "statement": text, "recorded_at": utc_now()}
+    write_investigation(path, data)
+    export_markdown(Path(path).parent, data)
+    return data
+
+
 def _lines(values: list[Any], fallback: str = "- 暂无。") -> str:
     rendered = [f"- {value}" for value in values if str(value).strip()]
     return "\n".join(rendered) if rendered else fallback
@@ -270,6 +320,13 @@ def export_markdown(case_dir: str | Path, data: dict[str, Any]) -> None:
             f"- 支持结果：{item.get('supporting_result', '')}\n"
             f"- 削弱结果：{item.get('weakening_result', '')}\n"
             f"- 风险与成本：{item.get('risk', '')} / {item.get('estimated_cost', '')}\n"
+        )
+    conclusion = data.get("conclusion")
+    if isinstance(conclusion, dict) and str(conclusion.get("statement") or "").strip():
+        chosen = next((item.get("title", "") for item in data.get("hypotheses", []) if item.get("id") == conclusion.get("hypothesis_id")), "")
+        hypothesis_parts.append(
+            f"\n## 结论\n\n- 采信路径：{chosen or conclusion.get('hypothesis_id', '')}\n"
+            f"- 根因判断：{conclusion.get('statement', '')}\n- 记录时间：{conclusion.get('recorded_at', '')}\n"
         )
     evidence_parts = ["# 证据记录\n", "## 已观察事实\n", _lines([e.get("statement", "") for e in data.get("evidence", []) if e.get("kind") == "fact"]), "\n## 推测\n", _lines([e.get("statement", "") for e in data.get("evidence", []) if e.get("kind") == "inference"]), "\n## 未知信息\n", _lines([u.get("question", "") for u in data.get("unknowns", [])])]
     try:
