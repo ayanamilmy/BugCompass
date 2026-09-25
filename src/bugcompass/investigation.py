@@ -10,6 +10,8 @@ from .workspace import BugCompassError, utc_now
 
 
 PRIORITIES = {"high", "medium", "low"}
+# 界面展示顺序：高 → 中 → 低；表里没有的优先级一律排到最后。
+PRIORITY_ORDER = {"high": 0, "medium": 1, "low": 2}
 KINDS = {"fact", "inference"}
 CAUSAL_NODE_KINDS = {"trigger", "decision", "state", "failure", "fix", "unknown"}
 CAUSAL_CERTAINTIES = {"fact", "inference", "unknown"}
@@ -46,6 +48,22 @@ def empty_investigation(case_id: str) -> dict[str, Any]:
             "source_references": [],
         },
     }
+
+
+def order_hypotheses(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按展示顺序排列调查路径：有效路径按 高→中→低 优先级，已否定路径沉底。
+
+    ``sorted`` 是稳定排序：同优先级（或同被否定）保持调查引擎给出的原始顺序，
+    所以界面上「路径 ①」永远是此刻最值得先做的那一条。
+    """
+
+    def sort_key(item: dict[str, Any]) -> tuple[int, int]:
+        return (
+            1 if item.get("status") == "rejected" else 0,
+            PRIORITY_ORDER.get(item.get("priority"), len(PRIORITY_ORDER)),
+        )
+
+    return sorted(items, key=sort_key)
 
 
 def validate_investigation(data: Any, *, require_complete: bool = False) -> dict[str, Any]:

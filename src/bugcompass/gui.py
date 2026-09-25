@@ -16,6 +16,7 @@ from .codex_runner import CodexRunBusyError, CodexRunResult, CodexRunner
 from .diagnostics import export_bundle, install_crash_handler, install_tk_handler
 from .dpi import apply_scaling, enable_windows_dpi_awareness, scale_percent
 from .gui_controller import CaseView, GuiController
+from .investigation import order_hypotheses
 from .issue_scout import IssueRecord, IssueScore, ScoutError, deterministic_taken, enrich_with_comments, export_markdown as export_scan_markdown, fetch_open_issues, filter_issues, issue_to_bug_text, load_last_scan, save_scan, scan_records_from_cache, scan_scores_from_cache
 from .key_store import delete_key, get_key, save_key, storage_hint
 from .llm import LLMError, LLMProviderConfig, ensure_providers, resolve_api_key, test_connection
@@ -146,6 +147,9 @@ def run_gui() -> int:
         GREEN = "#53D769"
         YELLOW = "#F5B942"
         RED = "#FF6363"
+        # 三条路径：编号用圆圈数字，颜色即优先级（已否定路径另行置灰）。
+        PATH_MARKS = "①②③④⑤⑥⑦⑧⑨⑩"
+        PATH_ACCENTS = {"high": ORANGE, "medium": YELLOW, "low": GREEN}
 
         def __init__(self) -> None:
             super().__init__()
@@ -1115,39 +1119,15 @@ def run_gui() -> int:
             self._render_metrics_card(view)
             self._render_causal_graph(data.get("causal_graph", {"nodes": [], "edges": []}))
             self._render_semantic_diff(data.get("semantic_diff", {}))
-            if not data.get("hypotheses"):
-                empty = ttk.Frame(self.cards_host, style="Surface.TFrame", padding=24)
-                empty.pack(fill="x", pady=12)
-                ttk.Label(empty, text=tr("◌  正在等待调查路径"), style="Heading.TLabel").pack(anchor="w")
-                ttk.Label(empty, text=tr("调查完成后，这里会出现三条有证据、可否定、可继续深入的路径。"), style="Muted.TLabel").pack(anchor="w", pady=(5, 0))
-            priority_names = {"high": tr("高"), "medium": tr("中"), "low": tr("低")}
-            for index, item in enumerate(data.get("hypotheses", []), 1):
-                card = ttk.LabelFrame(self.cards_host, text=tr('路径 0{}').format(index), style="Dark.TLabelframe", padding=18)
-                card.pack(fill="x", pady=(0, 12))
-                status = tr("（已否定）") if item.get("status") == "rejected" else ""
-                title_row = ttk.Frame(card, style="Card.TFrame")
-                title_row.pack(fill="x")
-                ttk.Label(title_row, text=item.get("title", tr("未命名路径")), style="Heading.TLabel").pack(side="left")
-                ttk.Label(title_row, text=tr('  {}优先级 {}').format(priority_names.get(item.get('priority'), '未知'), status), style="Status.TLabel").pack(side="right")
-                self._wrap_label(card, text=item.get("claim", ""), style="Body.TLabel", justify="left").pack(anchor="w", pady=(10, 12))
-                ttk.Label(card, text=tr("当前依据"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
-                for basis in item.get("basis", []):
-                    self._wrap_label(card, text=f"•  {basis}", style="Body.TLabel", justify="left").pack(anchor="w", pady=1)
-                for reference in item.get("source_references", []):
-                    line = reference.get("line")
-                    label = f"↗ {reference.get('path', '')}{':' + str(line) if line else ''}"
-                    ttk.Button(card, text=label, command=lambda ref=reference: self._open_reference(ref), style="Ghost.TButton").pack(anchor="w", pady=2)
-                next_box = ttk.Frame(card, style="Elevated.TFrame", padding=10)
-                next_box.pack(fill="x", pady=(10, 8))
-                self._wrap_label(next_box, text=tr('下一步  →  {}').format(item.get('next_step', '')), background=self.SURFACE_ALT, foreground=self.TEXT, justify="left", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w")
-                buttons = ttk.Frame(card, style="Card.TFrame")
-                buttons.pack(anchor="w", pady=(4, 0))
-                ttk.Button(buttons, text=tr("查看证据"), command=lambda h=item: self._show_evidence(h), style="Action.TButton").pack(side="left")
-                ttk.Button(buttons, text=tr("深入调查  →"), command=lambda h=item: self._run_followup("deepen", h.get("id")), style="Primary.TButton").pack(side="left", padx=8)
-                ttk.Button(buttons, text=tr("否定路径"), command=lambda h=item: self._reject_path(h.get("id")), style="Ghost.TButton").pack(side="left")
-                experiments = [e for e in data.get("suggested_experiments", []) if e.get("hypothesis_id") == item.get("id")]
-                for experiment in experiments:
-                    self._render_experiment_card(card, experiment)
+            hypotheses = order_hypotheses(data.get("hypotheses", []))
+            if hypotheses:
+                self._render_paths_header(hypotheses)
+                # 首选＝排序后第一条未被否定的路径：编号 ① 就是最该先做的那条。
+                preferred_id = next((item.get("id") for item in hypotheses if item.get("status") != "rejected"), None)
+                for index, item in enumerate(hypotheses):
+                    self._render_path_card(data, item, index, preferred_id)
+            else:
+                self._render_empty_paths()
             facts = [e.get("statement", "") for e in data.get("evidence", []) if e.get("kind") == "fact"]
             inferences = [e.get("statement", "") for e in data.get("evidence", []) if e.get("kind") == "inference"]
             unknowns = [u.get("question", "") for u in data.get("unknowns", [])]
@@ -1159,6 +1139,106 @@ def run_gui() -> int:
                 self._render_practice_reveal(self.current_reveal)
             # 内容与换行宽度最终同步（修复窄窗口/DPI 变化下长文本被裁切）。
             self.cards_scroll.refresh()
+
+        def _path_chip(self, parent: Any, text: str, *, background: str, foreground: str, **pack_options: Any) -> None:
+            """路径卡片上的小色块：颜色即含义（优先级 / 状态）。"""
+            ttk.Label(
+                parent, text=text, background=background, foreground=foreground,
+                font=self._font("SF Pro Text", 9, "bold"), padding=(8, 3),
+            ).pack(**pack_options)
+
+        def _render_paths_header(self, hypotheses: list[dict[str, Any]]) -> None:
+            """三条路径的分区标题：先讲清楚颜色与顺序，再列卡片。"""
+            header = ttk.Frame(self.cards_host, style="Surface.TFrame", padding=(18, 16))
+            header.pack(fill="x", pady=(0, 12))
+            ttk.Label(header, text="THREE INVESTIGATION PATHS", background=self.SURFACE, foreground=self.ORANGE, font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
+            ttk.Label(header, text=tr("三条路径"), style="Heading.TLabel").pack(anchor="w", pady=(4, 6))
+            self._wrap_label(header, text=tr("由调查引擎给出的三条根因假设，按优先级从高到低排列；首选路径已标出。"), style="Muted.TLabel", justify="left").pack(anchor="w")
+            legend = ttk.Frame(header, style="Surface.TFrame")
+            legend.pack(fill="x", pady=(10, 0))
+            for name, color in ((tr("高优先级"), self.ORANGE), (tr("中优先级"), self.YELLOW), (tr("低优先级"), self.GREEN)):
+                self._path_chip(legend, name, background=color, foreground="#17120E", side="left", padx=(0, 6))
+            refuted = sum(1 for item in hypotheses if item.get("status") == "rejected")
+            ttk.Label(legend, text=tr("已否定 {} 条").format(refuted), style="Muted.TLabel").pack(side="left", padx=(10, 0))
+
+        def _render_empty_paths(self) -> None:
+            """结果还没到：先把三条路径的位置摆出来，结构一眼可见。"""
+            empty = ttk.Frame(self.cards_host, style="Surface.TFrame", padding=24)
+            empty.pack(fill="x", pady=12)
+            ttk.Label(empty, text=tr("◌  正在等待调查路径"), style="Heading.TLabel").pack(anchor="w")
+            ttk.Label(empty, text=tr("调查完成后，这里会出现三条有证据、可否定、可继续深入的路径。"), style="Muted.TLabel").pack(anchor="w", pady=(5, 0))
+            slots = ttk.Frame(empty, style="Surface.TFrame")
+            slots.pack(fill="x", pady=(16, 0))
+            for column, mark in enumerate(self.PATH_MARKS[:3]):
+                slots.columnconfigure(column, weight=1, uniform="path")
+                slot = ttk.Frame(slots, style="Elevated.TFrame", padding=(14, 12))
+                slot.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0))
+                ttk.Label(slot, text=mark, background=self.SURFACE_ALT, foreground=self.SUBTLE, font=self._font("SF Pro Display", 20, "bold")).pack(anchor="w")
+                ttk.Label(slot, text=tr("等待调查结果…"), background=self.SURFACE_ALT, foreground=self.SUBTLE, font=self._font("SF Pro Text", 10)).pack(anchor="w", pady=(6, 0))
+
+        def _render_path_card(self, data: dict[str, Any], item: dict[str, Any], index: int, preferred_id: str | None) -> None:
+            """单条路径：左侧色条＝优先级配色，徽章行＝优先级 / 首选 / 状态。"""
+            rejected = item.get("status") == "rejected"
+            accent = self.BORDER if rejected else self.PATH_ACCENTS.get(item.get("priority"), self.SUBTLE)
+            mark = self.PATH_MARKS[index] if index < len(self.PATH_MARKS) else str(index + 1)
+            card = ttk.LabelFrame(self.cards_host, text=tr("路径 {}").format(mark), style="Dark.TLabelframe", padding=18)
+            card.pack(fill="x", pady=(0, 12))
+            body = ttk.Frame(card, style="Card.TFrame")
+            body.pack(fill="x")
+            self._tk_module.Frame(body, background=accent, width=4, highlightthickness=0, borderwidth=0).pack(side="left", fill="y")
+            content = ttk.Frame(body, style="Card.TFrame")
+            content.pack(side="left", fill="x", expand=True, padx=(14, 0))
+
+            badges = ttk.Frame(content, style="Card.TFrame")
+            badges.pack(fill="x")
+            priority_name = {"high": tr("高优先级"), "medium": tr("中优先级"), "low": tr("低优先级")}.get(item.get("priority"))
+            if priority_name:
+                self._path_chip(badges, priority_name, background=self.SURFACE_ALT if rejected else accent, foreground=self.MUTED if rejected else "#17120E", side="left")
+            if not rejected and item.get("id") == preferred_id:
+                ttk.Label(badges, text=tr("首选路径"), style="StepActive.TLabel").pack(side="left", padx=(8, 0))
+            status_chip = {"rejected": (tr("已否定"), self.RED), "supported": (tr("已支持"), self.GREEN), "weakened": (tr("已削弱"), self.YELLOW)}.get(item.get("status"))
+            if status_chip:
+                self._path_chip(badges, status_chip[0], background=self.SURFACE_ALT, foreground=status_chip[1], side="right")
+
+            title_row = ttk.Frame(content, style="Card.TFrame")
+            title_row.pack(fill="x", pady=(10, 0))
+            title_font = self._font("SF Pro Display", 15, "bold", "overstrike") if rejected else self._font("SF Pro Display", 15, "bold")
+            ttk.Label(title_row, text=item.get("title", tr("未命名路径")), style="Heading.TLabel", font=title_font, foreground=self.MUTED if rejected else self.TEXT).pack(side="left")
+            self._wrap_label(content, text=tr("假设：{}").format(item.get("claim", "")), style="Body.TLabel", justify="left", foreground=self.MUTED if rejected else self.TEXT).pack(anchor="w", pady=(8, 12))
+            ttk.Label(content, text=tr("当前依据"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
+            for basis in item.get("basis", []):
+                self._wrap_label(content, text=f"•  {basis}", style="Body.TLabel", justify="left", foreground=self.MUTED if rejected else self.TEXT).pack(anchor="w", pady=1)
+            for reference in item.get("source_references", []):
+                line = reference.get("line")
+                label = f"↗ {reference.get('path', '')}{':' + str(line) if line else ''}"
+                ttk.Button(content, text=label, command=lambda ref=reference: self._open_reference(ref), style="Ghost.TButton").pack(anchor="w", pady=2)
+            for value, heading, color in (
+                (item.get("supporting_result"), tr("支持结果"), self.GREEN),
+                (item.get("weakening_result"), tr("削弱结果"), self.RED),
+            ):
+                if not str(value or "").strip():
+                    continue
+                ttk.Label(content, text=heading, background=self.SURFACE, foreground=color, font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w", pady=(10, 0))
+                self._wrap_label(content, text=str(value), style="Body.TLabel", justify="left").pack(anchor="w", pady=(2, 0))
+            cost_names = {"high": tr("高"), "medium": tr("中"), "low": tr("低")}
+            meta: list[str] = []
+            if str(item.get("risk") or "").strip():
+                meta.append(tr("风险：{}").format(item["risk"]))
+            if str(item.get("estimated_cost") or "").strip():
+                cost = str(item["estimated_cost"])
+                meta.append(tr("预计成本：{}").format(cost_names.get(cost, cost)))
+            if meta:
+                self._wrap_label(content, text="  ·  ".join(meta), style="Muted.TLabel", justify="left").pack(anchor="w", pady=(10, 0))
+            next_box = ttk.Frame(content, style="Elevated.TFrame", padding=10)
+            next_box.pack(fill="x", pady=(10, 8))
+            self._wrap_label(next_box, text=tr('下一步  →  {}').format(item.get('next_step', '')), background=self.SURFACE_ALT, foreground=self.TEXT, justify="left", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w")
+            buttons = ttk.Frame(content, style="Card.TFrame")
+            buttons.pack(anchor="w", pady=(4, 0))
+            ttk.Button(buttons, text=tr("查看证据"), command=lambda h=item: self._show_evidence(h), style="Action.TButton").pack(side="left")
+            ttk.Button(buttons, text=tr("深入调查  →"), command=lambda h=item: self._run_followup("deepen", h.get("id")), style="Primary.TButton").pack(side="left", padx=8)
+            ttk.Button(buttons, text=tr("否定路径"), command=lambda h=item: self._reject_path(h.get("id")), style="Ghost.TButton").pack(side="left")
+            for experiment in [e for e in data.get("suggested_experiments", []) if e.get("hypothesis_id") == item.get("id")]:
+                self._render_experiment_card(content, experiment)
 
         def _render_causal_graph(self, graph: dict[str, Any]) -> None:
             panel = ttk.LabelFrame(self.cards_host, text=tr("因果链 · AI 初稿，可编辑"), style="Dark.TLabelframe", padding=14)
