@@ -17,6 +17,7 @@ from .investigation import (
     empty_investigation,
     export_markdown,
     read_investigation,
+    record_conclusion,
     record_experiment_prediction,
     reject_hypothesis,
     update_causal_graph,
@@ -261,6 +262,11 @@ class GuiController:
     def reject_path(self, case_id: str, hypothesis_id: str) -> CaseView:
         _, paths = show_case(self.workspace_path, case_id)
         reject_hypothesis(paths["investigation.json"], hypothesis_id)
+        return self.load_case(case_id)
+
+    def record_conclusion(self, case_id: str, hypothesis_id: str, statement: str) -> CaseView:
+        _, paths = show_case(self.workspace_path, case_id)
+        record_conclusion(paths["investigation.json"], hypothesis_id, statement)
         return self.load_case(case_id)
 
     def save_causal_graph(self, case_id: str, graph: dict[str, Any]) -> CaseView:
