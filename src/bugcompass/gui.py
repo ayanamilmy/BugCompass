@@ -30,6 +30,7 @@ from .metrics import (
 )
 from .mindmap import MindMapCanvas
 from .practice import PracticeCase, PracticeManager, PracticeReveal
+from . import qa
 from .report_gui import open_report_editor
 from .report_mode import ReportStore, SavedReport
 from .repro_report import review_draft
@@ -191,6 +192,8 @@ def run_gui() -> int:
             self.copy_status_var = tk.StringVar()
             self.codex_status_var = tk.StringVar(value=tr("● Codex 空闲"))
             self.codex_status_detail_var = tk.StringVar(value=tr("当前没有正在运行的调查。"))
+            self.qa_status_var = tk.StringVar()
+            self.qa_engine_var = tk.StringVar()
             self.details_visible = False
             self.busy = False
             self.codex_active = False
@@ -202,6 +205,9 @@ def run_gui() -> int:
             self.practice_cases: list[PracticeCase] = []
             self.recent_case_ids: list[str] = []
             self.events: queue.SimpleQueue[tuple[str, Any]] = queue.SimpleQueue()
+            # 追问与调查是两条独立的异步线：追问失败不该动案件状态，也不该被当成调查失败。
+            self.ask_busy = False
+            self.ask_case_id: str | None = None
             self.path_cards: list[Any] = []
             self.mindmap: MindMapCanvas | None = None
             self.causal_graph: dict[str, Any] = {"nodes": [], "edges": []}
@@ -592,6 +598,52 @@ def run_gui() -> int:
             self.cards_canvas = self.cards_scroll.canvas  # 兼容旧引用
             self.cards_host = self.cards_scroll.content
             self.cards_scroll.set_zoom_callback(self._on_cards_zoom)
+            page.columnconfigure(1, weight=0, minsize=330)
+            self._build_qa_panel(tk_module, ttk_module)
+
+        def _build_qa_panel(self, tk_module: Any, ttk_module: Any) -> None:
+            """右侧常驻的追问面板：就当前案件反复问引擎，只存对话不改调查结果。"""
+            panel = ttk_module.LabelFrame(self.result_page, text=tr("追问引擎"), style="Dark.TLabelframe", padding=14)
+            panel.grid(row=1, column=1, rowspan=4, sticky="nsew", padx=(14, 0))
+            head = ttk_module.Frame(panel, style="Card.TFrame")
+            head.pack(fill="x")
+            ttk_module.Label(head, text="ASK THE ENGINE", style="Eyebrow.TLabel").pack(side="left")
+            self.qa_clear_button = ttk_module.Button(head, text=tr("清空对话"), command=self._clear_conversation, style="Ghost.TButton")
+            self.qa_clear_button.pack(side="right")
+            ttk_module.Label(
+                panel, text=tr("就当前案件追问引擎。追问只保存对话（qa.json），不会改动调查结果。"),
+                style="Muted.TLabel", wraplength=280, justify="left",
+            ).pack(anchor="w", pady=(6, 2))
+            # 引擎名单独一行常驻：状态行只报当下发生的事，不该把它顶掉。
+            ttk_module.Label(panel, textvariable=self.qa_engine_var, style="Muted.TLabel", wraplength=280, justify="left").pack(
+                anchor="w", pady=(0, 8)
+            )
+
+            self.qa_transcript = tk_module.Text(
+                panel, wrap="word", state="disabled", relief="flat", borderwidth=0, highlightthickness=1,
+                highlightbackground=self.BORDER, background=self.SURFACE_ALT, foreground=self.TEXT,
+                padx=12, pady=10, font=self._font("SF Pro Text", 10), cursor="arrow",
+            )
+            self.qa_transcript.pack(fill="both", expand=True)
+            self.qa_transcript.tag_configure("user", foreground=self.ORANGE, font=self._font("SF Pro Text", 10, "bold"))
+            self.qa_transcript.tag_configure("assistant", foreground=self.TEXT, font=self._font("SF Pro Text", 10))
+            self.qa_transcript.tag_configure("meta", foreground=self.SUBTLE, font=self._font("SF Pro Text", 9))
+            self.qa_transcript.tag_configure("error", foreground=self.RED, font=self._font("SF Pro Text", 10))
+
+            self.qa_input = tk_module.Text(
+                panel, height=3, wrap="word", relief="flat", borderwidth=0, highlightthickness=1,
+                highlightbackground=self.BORDER, highlightcolor=self.ORANGE, background=self.SURFACE_ALT,
+                foreground=self.TEXT, insertbackground=self.TEXT, selectbackground="#654127",
+                padx=10, pady=8, font=self._font("SF Pro Text", 10),
+            )
+            self.qa_input.pack(fill="x", pady=(8, 6))
+            self.qa_input.bind("<Return>", self._on_qa_return)
+            self.qa_input.bind("<Shift-Return>", lambda _event: None)
+            row = ttk_module.Frame(panel, style="Card.TFrame")
+            row.pack(fill="x")
+            self.qa_send_button = ttk_module.Button(row, text=tr("发送  →"), command=self._ask_question, style="Primary.TButton")
+            self.qa_send_button.pack(side="right")
+            ttk_module.Label(row, textvariable=self.qa_status_var, style="Muted.TLabel", wraplength=200, justify="left").pack(side="left")
 
         def show_new_page(self) -> None:
             self.new_page.tkraise()
@@ -926,7 +978,34 @@ def run_gui() -> int:
                             pass
                     self._refresh_recent_cases()
                     self.message_box.showerror(tr("操作未完成"), str(message), parent=self)
-            if self.busy:
+                elif kind == "ask_progress":
+                    case_id, message = payload
+                    if self.ask_case_id == case_id:
+                        self.qa_status_var.set(str(message))
+                elif kind == "ask_done":
+                    asked_view, _question, answer = payload
+                    self.ask_busy = False
+                    self.ask_case_id = None
+                    try:
+                        qa.append_turn(asked_view.case_dir, "assistant", answer, engine=self._engine_display_name())
+                    except BugCompassError as exc:
+                        self.qa_status_var.set(str(exc))
+                    if self.current_case is not None and self.current_case.case_id == asked_view.case_id:
+                        self._render_conversation(asked_view.case_dir)
+                        self.qa_status_var.set(tr("回答完成，追问记录已保存在案件里。"))
+                    self._set_qa_busy_state()
+                elif kind == "ask_error":
+                    failed_ask_case, message, question = payload
+                    self.ask_busy = False
+                    self.ask_case_id = None
+                    self._set_qa_busy_state()
+                    if self.current_case is not None and self.current_case.case_id == failed_ask_case:
+                        self._append_qa_error(str(message))
+                        # 没答上来的问题放回输入框，别让用户重打一遍。
+                        if not self.qa_input.get("1.0", "end-1c").strip():
+                            self.qa_input.insert("1.0", question)
+                        self.qa_status_var.set(tr("追问没有成功。"))
+            if self.busy or self.ask_busy:
                 self.after(100, self._poll_events)
 
         def _finish_codex_run(self, view: CaseView, result: CodexRunResult) -> None:
@@ -1119,6 +1198,8 @@ def run_gui() -> int:
             step = flow_step(view.investigation, status=view.status)
             self._render_result_flow(step)
             self._render_next_step(view, step)
+            self._render_conversation(view.case_dir)
+            self._refresh_qa_state(view)
             self._render_investigation(view)
             if keep_scroll and scroll_fraction > 0:
                 self.cards_scroll.canvas.yview_moveto(scroll_fraction)
@@ -1273,6 +1354,121 @@ def run_gui() -> int:
             self._wrap_label(panel, text=str(conclusion.get("statement", "")), style="Body.TLabel", justify="left", font=self._font("SF Pro Display", 13, "bold")).pack(anchor="w", pady=(10, 6))
             ttk.Label(panel, text=tr("记录时间：{}").format(conclusion.get("recorded_at", "")), style="Muted.TLabel").pack(anchor="w")
             ttk.Button(panel, text=tr("修改结论"), command=self._open_conclusion_dialog, style="Ghost.TButton").pack(anchor="w", pady=(10, 0))
+
+        # ------------------------------------------------------ 追问引擎（右侧面板）
+        def _on_qa_return(self, _event: Any) -> str:
+            self._ask_question()
+            return "break"
+
+        def _render_conversation(self, case_dir: Any) -> None:
+            """把落盘的问答画进面板。引擎回答与你的提问用不同颜色，正文可以选中复制。"""
+            transcript = self.qa_transcript
+            transcript.configure(state="normal")
+            transcript.delete("1.0", "end")
+            turns = qa.load_turns(case_dir)
+            if not turns:
+                transcript.insert("end", tr("还没有问答。可以问「为什么路径 ① 排在前面？」这类问题。"), "meta")
+            for turn in turns:
+                is_user = turn["role"] == "user"
+                speaker = tr("你") if is_user else (turn.get("engine") or self._engine_display_name())
+                if transcript.index("end-1c") != "1.0":
+                    transcript.insert("end", "\n\n")
+                transcript.insert("end", f"{speaker}\n", "meta")
+                transcript.insert("end", turn["content"] + "\n", "user" if is_user else "assistant")
+            transcript.configure(state="disabled")
+            transcript.see("end")
+
+        def _set_qa_busy_state(self) -> None:
+            send_button = getattr(self, "qa_send_button", None)
+            if send_button is None:
+                return
+            send_button.configure(state="disabled" if (self.ask_busy or self.busy) else "normal")
+            self.qa_clear_button.configure(state="disabled" if self.ask_busy else "normal")
+
+        def _refresh_qa_state(self, view: CaseView) -> None:
+            """面板状态跟着案件走：练习案件不开放追问，免得读到真实修复。"""
+            self.qa_engine_var.set(tr("当前引擎：{}").format(self._engine_display_name()))
+            if view.practice_session_id:
+                self.qa_input.configure(state="disabled")
+                if not self.ask_busy:
+                    self.qa_status_var.set(tr("历史练习不开放追问：避免读到真实修复。"))
+            else:
+                self.qa_input.configure(state="normal")
+                if not self.ask_busy:
+                    self.qa_status_var.set(tr("按 Enter 发送，Shift+Enter 换行。"))
+            self._set_qa_busy_state()
+
+        def _ask_question(self) -> None:
+            if self.ask_busy or self.current_case is None:
+                return
+            question = self.qa_input.get("1.0", "end-1c").strip()
+            if not question:
+                self.qa_status_var.set(tr("请先写下你的问题。"))
+                return
+            view = self.current_case
+            if view.practice_session_id:
+                self.qa_status_var.set(tr("历史练习不开放追问：避免读到真实修复。"))
+                return
+            if self.busy:
+                self.qa_status_var.set(tr("调查还在跑，等它结束再追问。"))
+                return
+            try:
+                qa.append_turn(view.case_dir, "user", question)
+            except BugCompassError as exc:
+                self.qa_status_var.set(str(exc))
+                return
+            self.qa_input.delete("1.0", "end")
+            self._render_conversation(view.case_dir)
+            turns = qa.load_turns(view.case_dir)
+            runner = self._engine_runner()
+            runner.reset_cancellation()
+            self.ask_busy = True
+            self.ask_case_id = view.case_id
+            self.qa_status_var.set(tr("正在回答……（{}）").format(self._engine_display_name()))
+            self._set_qa_busy_state()
+
+            def worker() -> None:
+                try:
+                    answer = runner.ask(
+                        view,
+                        question,
+                        turns,
+                        progress=lambda text, case_id=view.case_id: self.events.put(("ask_progress", (case_id, text))),
+                    )
+                    self.events.put(("ask_done", (view, question, answer)))
+                except Exception as exc:
+                    message = str(exc) if isinstance(exc, (BugCompassError, OSError)) else tr("追问时发生意外错误。")
+                    self.events.put(("ask_error", (view.case_id, message, question)))
+
+            threading.Thread(target=worker, daemon=False).start()
+            self.after(100, self._poll_events)
+
+        def _append_qa_error(self, message: str) -> None:
+            transcript = self.qa_transcript
+            transcript.configure(state="normal")
+            if transcript.index("end-1c") != "1.0":
+                transcript.insert("end", "\n\n")
+            transcript.insert("end", tr("追问失败：{}").format(message), "error")
+            transcript.configure(state="disabled")
+            transcript.see("end")
+
+        def _clear_conversation(self) -> None:
+            if self.current_case is None or self.ask_busy:
+                return
+            confirmed = self.message_box.askyesno(
+                tr("清空对话"),
+                tr("只删除问答记录（qa.json），调查结果不受影响。确定清空吗？"),
+                parent=self,
+            )
+            if not confirmed:
+                return
+            try:
+                qa.clear_turns(self.current_case.case_dir)
+            except BugCompassError as exc:
+                self.qa_status_var.set(str(exc))
+                return
+            self._render_conversation(self.current_case.case_dir)
+            self.qa_status_var.set(tr("对话已清空，调查结果原样保留。"))
 
         def _render_investigation(self, view: CaseView) -> None:
             # 统一走滚动容器的 clear()：销毁旧控件 + 复位滚动，避免残影。

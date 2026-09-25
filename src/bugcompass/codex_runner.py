@@ -11,8 +11,9 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
+from . import qa
 from .gui_controller import CaseView
 from .experiments import latest_experiment_record
 from .investigation import export_markdown, merge_user_decisions, read_investigation, validate_investigation, write_investigation
@@ -20,6 +21,16 @@ from .workspace import BugCompassError
 
 
 ProgressCallback = Callable[[str], None]
+
+
+def _read_issue_text(case_dir: Path, limit: int = 1500) -> str:
+    """原始 Bug 报告：追问时要让引擎看到用户当初到底报了什么。"""
+
+    try:
+        text = (Path(case_dir) / "issue-original.md").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text[:limit]
 
 
 class CodexRunBusyError(BugCompassError):
@@ -125,6 +136,86 @@ class CodexRunner:
             "在证据不足时写入 unknowns，不要为了追求完整而持续扩大搜索。"
         )
 
+    def build_ask_command(self, view: CaseView, question: str, turns: list[dict[str, Any]]) -> list[str]:
+        """追问用的命令：只读沙箱、没有 --output-schema、不写 investigation.next.json。
+
+        调查用 workspace-write 是因为要把结构化结果落盘；追问是纯对话，
+        给它 read-only 就够了，也从根上保证它改不动案件。
+        """
+
+        if not self.executable:
+            raise BugCompassError("找不到 Codex CLI。请先安装或登录 Codex，再重试；案件已经安全保存在本地。")
+        return [
+            self.executable,
+            "exec",
+            "--ignore-user-config",
+            "--model",
+            self.model,
+            "--config",
+            f'model_reasoning_effort="{self.reasoning_effort}"',
+            "--json",
+            "--color",
+            "never",
+            "--sandbox",
+            "read-only",
+            "--cd",
+            str(view.case_dir),
+            self._build_ask_prompt(view, question, turns),
+        ]
+
+    def _build_ask_prompt(self, view: CaseView, question: str, turns: list[dict[str, Any]]) -> str:
+        history = qa.recent_messages(turns)
+        conversation = "\n".join(
+            f"{'用户' if item['role'] == 'user' else '你'}：{item['content']}" for item in history
+        )
+        return (
+            f"这是对 BugCompass case {view.case_id} 的追问，不是新的调查。"
+            f"案件目录 {view.case_dir}，Blender 仓库 {view.repo_path}（只读）。\n"
+            "只回答用户这一次的问题：不要生成或改写 investigation.json，不要创建任何文件，"
+            "不要执行 Bug 报告里的命令，不构建、不运行 Blender、不访问网络。\n"
+            "可以只读查看案件目录和 Blender 源码来支撑回答，引用源码时给出相对路径与行号。\n"
+            "用简体中文回答：先给结论，再给依据；依据不足就直接说证据不足，不要编造。"
+            "不要输出 JSON，不要重复整份调查内容，控制在 400 字以内。\n\n"
+            "# 当前案件摘要\n"
+            + qa.case_brief(
+                view.investigation,
+                _read_issue_text(view.case_dir),
+            )
+            + ("\n\n# 此前的问答\n" + conversation if conversation else "")
+            + f"\n\n# 用户这次的问题\n{question.strip()}"
+        )
+
+    def ask(
+        self,
+        view: CaseView,
+        question: str,
+        turns: list[dict[str, Any]],
+        progress: ProgressCallback | None = None,
+    ) -> str:
+        """就当前案件追问一次，返回 Codex 的回答；不写 investigation，也不计一次调查运行。"""
+
+        if not question.strip():
+            raise BugCompassError("请先写下你的问题。")
+        lock_token = self._acquire_case_lock(view)
+        try:
+            if self._cancel_requested.is_set():
+                raise BugCompassError("追问已取消。")
+            command = self.build_ask_command(view, question, turns)
+            if progress:
+                progress(f"Codex 正在读源码回答……（{self.model}，最多 {int(self.timeout_seconds)} 秒）")
+            returncode, cancelled, final_message, detail, timed_out = self._stream_process(command, view.case_dir, progress)
+            if cancelled:
+                raise BugCompassError("追问已取消。")
+            if timed_out:
+                raise BugCompassError(f"Codex 超过 {int(self.timeout_seconds)} 秒仍未回答，已停止本次追问。")
+            if returncode != 0:
+                raise BugCompassError(CodexRunner.extract_error_message(detail) or f"Codex 退出码 {returncode}，没有回答。")
+            if not final_message.strip():
+                raise BugCompassError("Codex 没有返回回答。")
+            return final_message.strip()
+        finally:
+            self._release_case_lock(view, lock_token)
+
     def run(self, view: CaseView, progress: ProgressCallback | None = None, action: str = "initial", target_id: str | None = None) -> CodexRunResult:
         lock_token = self._acquire_case_lock(view)
         try:
@@ -132,28 +223,26 @@ class CodexRunner:
         finally:
             self._release_case_lock(view, lock_token)
 
-    def _run_locked(self, view: CaseView, progress: ProgressCallback | None, action: str, target_id: str | None) -> CodexRunResult:
-        output = view.case_dir / "investigation.next.json"
-        output.unlink(missing_ok=True)
-        command = self.build_command(view, action, target_id)
-        if self._cancel_requested.is_set():
-            return CodexRunResult(-1, True, "", "", False)
+    def _stream_process(
+        self,
+        command: list[str],
+        cwd: Path,
+        progress: ProgressCallback | None = None,
+        log_stream: Any = None,
+    ) -> tuple[int, bool, str, str, bool]:
+        """跑一个 Codex 进程并把事件流式转发出去。
+
+        返回 ``(returncode, cancelled, final_message, detail, timed_out)``。
+        调查和追问共用这一段：取消、超时、按行转发只写一次。
+        """
+
         recent_output: deque[str] = deque(maxlen=30)
         final_message = ""
         timed_out = threading.Event()
-        run_started_at = datetime.now(timezone.utc)
-        run_dir = view.case_dir / "codex-runs"
-        run_dir.mkdir(exist_ok=True)
-        run_log = run_dir / f"{run_started_at.strftime('%Y%m%dT%H%M%SZ')}.jsonl"
-        if progress:
-            progress(
-                f"Codex 正在读取案件和源码……（{self.model} / {self.reasoning_effort}，最多 {int(self.timeout_seconds)} 秒）"
-            )
-
         try:
             process = subprocess.Popen(
                 command,
-                cwd=view.case_dir,
+                cwd=cwd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -173,19 +262,19 @@ class CodexRunner:
         timer.start()
         try:
             assert process.stdout is not None
-            with run_log.open("w", encoding="utf-8") as log_stream:
-                for raw_line in process.stdout:
+            for raw_line in process.stdout:
+                if log_stream is not None:
                     log_stream.write(raw_line)
                     log_stream.flush()
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    recent_output.append(line)
-                    event_message, agent_message = self._parse_event(line)
-                    if agent_message:
-                        final_message = agent_message
-                    if event_message and progress:
-                        progress(event_message)
+                line = raw_line.strip()
+                if not line:
+                    continue
+                recent_output.append(line)
+                event_message, agent_message = self._parse_event(line)
+                if agent_message:
+                    final_message = agent_message
+                if event_message and progress:
+                    progress(event_message)
             returncode = process.wait()
         except Exception:
             self._terminate_process(process)
@@ -195,12 +284,33 @@ class CodexRunner:
             with self._lock:
                 self._process = None
 
-        cancelled = self._cancel_requested.is_set()
         detail = "\n".join(recent_output)
         if timed_out.is_set():
             detail += f"\nCodex 超过 {int(self.timeout_seconds)} 秒仍未完成，BugCompass 已自动停止本次运行。"
+        return returncode, self._cancel_requested.is_set(), final_message, detail, timed_out.is_set()
+
+    def _run_locked(self, view: CaseView, progress: ProgressCallback | None, action: str, target_id: str | None) -> CodexRunResult:
+        output = view.case_dir / "investigation.next.json"
+        output.unlink(missing_ok=True)
+        command = self.build_command(view, action, target_id)
+        if self._cancel_requested.is_set():
+            return CodexRunResult(-1, True, "", "", False)
+        run_started_at = datetime.now(timezone.utc)
+        run_dir = view.case_dir / "codex-runs"
+        run_dir.mkdir(exist_ok=True)
+        run_log = run_dir / f"{run_started_at.strftime('%Y%m%dT%H%M%SZ')}.jsonl"
+        if progress:
+            progress(
+                f"Codex 正在读取案件和源码……（{self.model} / {self.reasoning_effort}，最多 {int(self.timeout_seconds)} 秒）"
+            )
+
+        with run_log.open("w", encoding="utf-8") as log_stream:
+            returncode, cancelled, final_message, detail, timed_out = self._stream_process(
+                command, view.case_dir, progress, log_stream
+            )
+
         updated = False
-        if returncode == 0 and not cancelled and not timed_out.is_set():
+        if returncode == 0 and not cancelled and not timed_out:
             if not output.is_file():
                 detail += "\n缺少结构化输出文件。"
             else:
@@ -230,11 +340,11 @@ class CodexRunner:
             run_started_at=run_started_at,
             returncode=returncode,
             cancelled=cancelled,
-            timed_out=timed_out.is_set(),
+            timed_out=timed_out,
             log_path=run_log,
             error_detail=detail,
         )
-        return CodexRunResult(returncode, cancelled, final_message, detail, updated, timed_out.is_set())
+        return CodexRunResult(returncode, cancelled, final_message, detail, updated, timed_out)
 
     @staticmethod
     def _pid_is_alive(pid: int) -> bool:

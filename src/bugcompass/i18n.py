@@ -598,6 +598,26 @@ EN: dict[str, str] = {
     '采信路径：{}': 'Chosen path: {}',
     '记录时间：{}': 'Recorded at: {}',
     '修改结论': 'Edit conclusion',
+    # ---- 追问引擎（右侧面板）
+    '追问引擎': 'Ask the engine',
+    '清空对话': 'Clear conversation',
+    '就当前案件追问引擎。追问只保存对话（qa.json），不会改动调查结果。': 'Ask the engine about this case. Follow-ups only save the conversation (qa.json); the investigation is untouched.',
+    '发送  →': 'Send  →',
+    '正在回答…': 'Answering…',
+    '还没有问答。可以问「为什么路径 ① 排在前面？」这类问题。': 'No questions yet. Try something like "Why is path ① ranked first?"',
+    '你': 'You',
+    '历史练习不开放追问：避免读到真实修复。': 'Follow-ups are off for historic practice cases, so the real fix stays hidden.',
+    '当前引擎：{}': 'Current engine: {}',
+    '按 Enter 发送，Shift+Enter 换行。': 'Press Enter to send, Shift+Enter for a new line.',
+    '请先写下你的问题。': 'Write your question first.',
+    '调查还在跑，等它结束再追问。': 'The investigation is still running — wait for it to finish before asking.',
+    '正在回答……（{}）': 'Answering… ({})',
+    '追问时发生意外错误。': 'Something unexpected went wrong while asking.',
+    '追问失败：{}': 'Asking failed: {}',
+    '追问没有成功。': 'The question was not answered.',
+    '回答完成，追问记录已保存在案件里。': 'Answered — the exchange is saved in the case.',
+    '只删除问答记录（qa.json），调查结果不受影响。确定清空吗？': 'This deletes only the conversation (qa.json); the investigation is unaffected. Clear it?',
+    '对话已清空，调查结果原样保留。': 'Conversation cleared; the investigation is untouched.',
 }
 
 

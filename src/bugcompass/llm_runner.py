@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from . import qa
 from .investigation import (
     empty_investigation,
     export_markdown,
@@ -155,6 +156,81 @@ class LLMInvestigator:
 
     def cancel(self) -> None:
         self._cancel.set()
+
+    # ------------------------------------------------------------------ 追问
+    def _ask_messages(self, view: Any, question: str, turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        issue_text = self._read_text_limited(Path(view.case_dir) / "issue-original.md", ISSUE_MAX_CHARS)
+        system = (
+            "你是 BugCompass 的案件助手。用户正在调查一个 Blender Bug，现在针对当前案件向你追问。\n"
+            "规则：\n"
+            "1. 只回答用户这一次的问题，不产出新的调查结果、不改写 investigation.json、不修改任何文件；"
+            "你只能通过只读工具查看 Blender 仓库和当前案件目录。\n"
+            "2. 用简体中文回答：先给结论，再给依据；引用源码时给出相对路径与行号。\n"
+            "3. 依据不足就直接说「当前证据不足」，并指出还需要验证什么，不要编造。\n"
+            "4. 这是追问对话：不要输出 JSON，不要重复整份调查内容，控制在 400 字以内。\n\n"
+            "# 当前案件\n"
+            + qa.case_brief(getattr(view, "investigation", {}) or {}, issue_text)
+        )
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
+        messages.extend(qa.recent_messages(turns))
+        messages.append({"role": "user", "content": question.strip()})
+        return messages
+
+    def ask(
+        self,
+        view: Any,
+        question: str,
+        turns: list[dict[str, Any]],
+        progress: ProgressCallback | None = None,
+    ) -> str:
+        """就当前案件追问一次，返回模型回答；不写 investigation，也不计一次调查运行。"""
+
+        if not question.strip():
+            raise BugCompassError("请先写下你的问题。")
+        if self._cancel.is_set():
+            raise BugCompassError("追问已取消。")
+        api_key = resolve_api_key(self.provider)
+        messages = self._ask_messages(view, question, turns)
+        rounds = 0
+        while rounds < self.max_rounds:
+            if self._cancel.is_set():
+                raise BugCompassError("追问已取消。")
+            rounds += 1
+            response = chat_completion(self.provider, messages, api_key=api_key, tools=TOOL_DEFINITIONS)
+            if response.tool_calls:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": response.content or "",
+                        "tool_calls": [
+                            {
+                                "id": call["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": call["name"],
+                                    "arguments": json.dumps(call["arguments"], ensure_ascii=False),
+                                },
+                            }
+                            for call in response.tool_calls
+                        ],
+                    }
+                )
+                for call in response.tool_calls:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "content": self._execute_tool(call["name"], call["arguments"], view),
+                        }
+                    )
+                if progress:
+                    progress(f"{self.provider.label} 正在只读检查本地源码（第 {rounds}/{self.max_rounds} 轮）……")
+                continue
+            answer = (response.content or "").strip()
+            if not answer:
+                raise BugCompassError("模型没有返回回答。")
+            return answer
+        raise BugCompassError(f"追问超过 {self.max_rounds} 轮工具调用仍未给出回答，已停止。")
 
     # ------------------------------------------------------------------ 主流程
     def run(
