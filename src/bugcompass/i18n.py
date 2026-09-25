@@ -608,6 +608,7 @@ EN: dict[str, str] = {
     '你': 'You',
     '历史练习不开放追问：避免读到真实修复。': 'Follow-ups are off for historic practice cases, so the real fix stays hidden.',
     '当前引擎：{}': 'Current engine: {}',
+    '{}（缓存 {}）': '{} ({} cached)',
     '按 Enter 发送，Shift+Enter 换行。': 'Press Enter to send, Shift+Enter for a new line.',
     '请先写下你的问题。': 'Write your question first.',
     '调查还在跑，等它结束再追问。': 'The investigation is still running — wait for it to finish before asking.',
