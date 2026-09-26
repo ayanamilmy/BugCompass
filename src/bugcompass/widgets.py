@@ -9,6 +9,10 @@ Windows 上 Tk 的常见毛病与本模块的对策：
   ``scrollregion``，避免出现半屏空白或被裁掉的一截（断层）。
 * **长文本被裁切**：Tk 的 ``wraplength`` 是写死的像素值，窗口变窄或 DPI 变大时文字
   会溢出卡片。这里登记所有需要换行的标签，在每次尺寸变化时重算换行宽度。
+* **按钮行被窗口边缘裁掉**：Tk 没有流式布局，一行放不下时右侧控件会被直接切掉
+  （表现为按钮文字只剩一半）。:class:`FlowRow` 按可用宽度自动折行。
+* **指标格子被挤窄**：grid 装不下时会把每一列一起压缩，格子里的数值被裁成半截
+  （``491,312（缓存 386,9``）。:class:`FlowGrid` 宽度不够时减少列数，而不是压窄每列。
 """
 
 from __future__ import annotations
@@ -17,6 +21,10 @@ from typing import Any, Callable
 
 # 自身就能滚动、应当优先使用原生行为的控件类型名。
 _NATIVE_SCROLLERS = ("Text", "Listbox", "Treeview", "TCombobox", "Spinbox", "Entry", "TEntry")
+
+# 按自身宽度换行时留出的余量：分到的宽度里含边框与内边距，文字区要窄一点，
+# 贴着整宽换行会让每行末尾的字符被切掉半个。
+WRAP_MARGIN = 6
 
 
 class _CanvasWheelAdapter:
@@ -128,6 +136,222 @@ class MouseWheelRouter:
         return None
 
 
+def wrap_to_self(label: Any) -> Any:
+    """让标签按**自己的实际宽度**换行。
+
+    与 :meth:`ScrollableFrame.wrap_here` 的区别：那个是从容器宽度减去估算的留白，
+    适合 ``anchor="w"``（宽度由内容决定）的标签；而这个适合 ``fill="x"`` /
+    ``sticky="ew"``（宽度由布局决定）的标签——直接读自己的宽度最准，
+    不用猜留白，也不会因为估多了而被裁切。
+
+    记住「上次套用的宽度」而不是回头读 ``cget("wraplength")``：ttk 控件没设过的
+    像素选项读出来是空字符串，转 int 会抛异常，换行就永远不会生效。
+    """
+
+    applied = {"width": -1}
+
+    def _on_configure(event: Any) -> None:
+        # 留一点余量：控件分到的宽度包含边框和内边距，文字区比它窄。
+        # 按整宽换行的话，每行最后一个字会正好压在边上被切掉半个。
+        target = max(80, event.width - WRAP_MARGIN)
+        if target == applied["width"]:
+            return
+        applied["width"] = target
+        try:
+            label.configure(wraplength=target)
+        except Exception:  # pragma: no cover - 控件已销毁
+            pass
+
+    label.bind("<Configure>", _on_configure)
+    return label
+
+
+def flow_rows(widths: list[int], available: int, gap: int = 10) -> list[list[int]]:
+    """把一串控件宽度折成若干行，返回每行放哪些控件的下标。
+
+    纯函数（不碰 Tk），便于单测。之所以不能简单地「一行累加超了就往下一行」：
+    grid 的列宽是**所有行共用**的，某一行第 2 个控件比较宽，会把第 2 列撑大，
+    于是别的行的第 3 个控件也会被推到更右边——只看单行累加会算漏，最后一列
+    控件就越过了容器右边缘（Windows 上表现为按钮被切掉一半）。
+    所以先贪心分行，再按真实列宽回头校验，超宽的行把末尾控件挤到下一行，直到稳定。
+    """
+
+    if not widths or available <= 0:
+        return [[index] for index in range(len(widths))]
+
+    rows: list[list[int]] = [[]]
+    for index in range(len(widths)):
+        rows[-1].append(index)
+        if len(rows[-1]) > 1 and _flow_row_overflowing(rows, widths, available, gap):
+            rows[-1].pop()
+            rows.append([index])
+
+    # 回头校验：贪心时后面的行还没出现，列宽可能被后来的控件撑大。
+    while True:
+        overflowing = next(
+            (r for r, items in enumerate(rows) if len(items) > 1 and _flow_row_overflowing(rows, widths, available, gap, only=r)),
+            None,
+        )
+        if overflowing is None:
+            return rows
+        moved = rows[overflowing].pop()
+        if overflowing + 1 < len(rows):
+            rows[overflowing + 1].insert(0, moved)
+        else:
+            rows.append([moved])
+
+
+def _flow_row_overflowing(
+    rows: list[list[int]], widths: list[int], available: int, gap: int, *, only: int | None = None
+) -> bool:
+    """按「列宽取各行最大值」算出每行真实宽度，判断是否有行超出可用宽度。"""
+
+    columns = max((len(row) for row in rows), default=0)
+    column_width = [0] * columns
+    for row in rows:
+        for column, index in enumerate(row):
+            column_width[column] = max(column_width[column], widths[index])
+    targets = range(len(rows)) if only is None else [only]
+    for row_index in targets:
+        row = rows[row_index]
+        total = sum(column_width[: len(row)]) + gap * (len(row) - 1)
+        if total > available:
+            return True
+    return False
+
+
+class FlowRow:
+    """按可用宽度自动折行的控件行。
+
+    Tk 的 pack/grid 都不会折行：一行放不下时，右边的控件会被父容器直接裁掉，
+    Windows 上表现为按钮文字只剩半截。这里在 ``<Configure>`` 里按每个控件的
+    诉求宽度重新分行——宽度够就一行放完，不够就换行，一个控件都不会丢。
+    """
+
+    def __init__(self, parent: Any, ttk_module: Any, *, gap: int = 10, row_gap: int = 8) -> None:
+        self.frame = ttk_module.Frame(parent, style="App.TFrame")
+        self.gap = gap
+        self.row_gap = row_gap
+        self._items: list[Any] = []
+        self._width = 0
+        self.frame.bind("<Configure>", self._on_configure)
+
+    def add(self, widget: Any) -> Any:
+        """把一个控件交给本行管理，返回它本身便于链式使用。"""
+        self._items.append(widget)
+        widget.grid(row=0, column=len(self._items) - 1, sticky="w")
+        return widget
+
+    def _on_configure(self, event: Any) -> None:
+        if event.width == self._width:
+            return
+        self._width = event.width
+        self.relayout()
+
+    def relayout(self) -> None:
+        """按当前宽度重新分行（宽度还没量到就先不分行，保持初始顺序）。"""
+        if not self._items or self._width <= 0:
+            return
+        self.frame.update_idletasks()
+        widths = [widget.winfo_reqwidth() for widget in self._items]
+        for row_index, row in enumerate(flow_rows(widths, self._width, self.gap)):
+            for column, index in enumerate(row):
+                self._items[index].grid(
+                    row=row_index,
+                    column=column,
+                    sticky="w",
+                    padx=(0 if column == 0 else self.gap, 0),
+                    pady=(0 if row_index == 0 else self.row_gap, 0),
+                )
+
+
+def _still_exists(widget: Any) -> bool:
+    """控件是否还在（已销毁的控件不能再设置属性）。"""
+    try:
+        return bool(widget.winfo_exists())
+    except Exception:  # pragma: no cover - 控件已销毁
+        return False
+
+
+def grid_columns(widths: list[int], available: int, gap: int = 8, max_columns: int | None = None) -> int:
+    """等宽网格一行摆几列：按最宽的格子算，宁可少一列也不把格子挤窄。
+
+    纯函数，便于单测。Tk 的 grid 在容器装不下时会**压缩每一列**，格子里的文字
+    就被裁掉（Windows 上表现为「491,312（缓存 386,9」）。所以宽度不够时要减列，
+    而不是让每列一起变窄。
+    """
+
+    if not widths or available <= 0:
+        return 1
+    widest = max(widths) + gap  # 每列还要留出格子之间的间距
+    limit = len(widths) if max_columns is None else min(max_columns, len(widths))
+    columns = 1
+    while columns < limit and (columns + 1) * widest <= available:
+        columns += 1
+    return columns
+
+
+class FlowGrid:
+    """列数随宽度变化的等宽网格（宽度不够就少摆一列）。
+
+    用来摆一排等价的「格子」——运行指标那样的小卡片。Tk 的 grid 只会把列压窄，
+    格子里的文字就没了；这里在 ``<Configure>`` 里重算列数并重新 grid。
+    """
+
+    def __init__(
+        self,
+        parent: Any,
+        ttk_module: Any,
+        *,
+        gap: int = 8,
+        row_gap: int = 6,
+        max_columns: int | None = None,
+        style: str = "Card.TFrame",
+    ) -> None:
+        self.frame = ttk_module.Frame(parent, style=style)
+        self.gap = gap
+        self.row_gap = row_gap
+        self.max_columns = max_columns
+        self._items: list[Any] = []
+        self._width = 0
+        self.frame.bind("<Configure>", self._on_configure)
+
+    def add(self, widget: Any) -> Any:
+        """把一个格子交给本网格管理，返回它本身便于链式使用。"""
+        self._items.append(widget)
+        widget.grid(row=0, column=len(self._items) - 1, sticky="ew")
+        return widget
+
+    def _on_configure(self, event: Any) -> None:
+        if event.width == self._width:
+            return
+        self._width = event.width
+        self.relayout()
+
+    def relayout(self) -> None:
+        """按当前宽度重新排列（宽度还没量到就先不动，保持初始顺序）。"""
+        if not self._items or self._width <= 0:
+            return
+        self.frame.update_idletasks()
+        widths = [widget.winfo_reqwidth() for widget in self._items]
+        columns = grid_columns(widths, self._width, self.gap, self.max_columns)
+        for index, widget in enumerate(self._items):
+            column = index % columns
+            widget.grid(
+                row=index // columns,
+                column=column,
+                sticky="ew",
+                padx=(0 if column == 0 else self.gap, 0),
+                pady=(0 if index < columns else self.row_gap, 0),
+            )
+        # 上一次用过、这次用不到的列要复位，否则残留的 weight 会继续撑开旧列。
+        for column in range(self.frame.grid_size()[0]):
+            if column < columns:
+                self.frame.columnconfigure(column, weight=1, uniform="flowgrid")
+            else:
+                self.frame.columnconfigure(column, weight=0, uniform="")
+
+
 class ScrollableFrame:
     """带垂直滚动条的容器。
 
@@ -152,6 +376,8 @@ class ScrollableFrame:
         self._wrapped: list[tuple[Any, int]] = []
         self._zoom_callback: Callable[[int], None] | None = None
         self._show_scrollbar = True
+        # 已经套用过的宽度。0 表示还没量过——此时登记的标签先不设换行宽度。
+        self._applied_width = 0
 
         self.canvas = tk_module.Canvas(
             parent,
@@ -186,16 +412,36 @@ class ScrollableFrame:
         """销毁全部子控件并复位。重渲染前必须调用，避免旧卡片残留造成拖影。"""
         for child in list(self.content.winfo_children()):
             child.destroy()
-        self._wrapped.clear()
+        # 只注销「住在内容帧里」的标签——它们已经随卡片一起销毁了。
+        # 登记表里还有挂在滚动区域**外面**的标签（例如概览卡片的正文：它是画布的
+        # 兄弟节点，清空内容并不会让它消失）。一并清掉的话，重渲染一次它就彻底
+        # 失联，换行宽度永远停在上一次的数值上，窗口一变宽就被裁掉。
+        self._wrapped = [
+            (label, padding) for label, padding in self._wrapped
+            if _still_exists(label) and not self._inside_content(label)
+        ]
         self.canvas.yview_moveto(0.0)
         self.refresh()
+
+    def _inside_content(self, widget: Any) -> bool:
+        """控件是否住在内容帧里（内容帧里的控件会随 ``clear`` 一起销毁）。"""
+        try:
+            path = str(widget)
+            content = str(self.content)
+        except Exception:  # pragma: no cover - 控件已销毁
+            return True
+        return path == content or path.startswith(content + ".")
 
     def wrap_here(self, label: Any, padding: int = 56) -> Any:
         """登记一个需要随宽度自动换行的标签。
 
         ``padding`` 是标签到滚动区域两侧的大致留白（含卡片内边距）。
+        登记时立刻套用已知宽度：否则要等下一次 refresh，期间标签的 wraplength 是 0
+        （Tk 里 0 等于「不换行」），长文本会直接顶破卡片。
         """
         self._wrapped.append((label, padding))
+        if self._applied_width:
+            self._set_wraplength(label, padding, self._applied_width)
         return label
 
     # -- 滚动 -------------------------------------------------------------
@@ -220,17 +466,32 @@ class ScrollableFrame:
         self._zoom_callback = callback
 
     # -- 尺寸同步 ---------------------------------------------------------
+    def _set_wraplength(self, label: Any, padding: int, width: int) -> None:
+        try:
+            if label.winfo_exists():
+                label.configure(wraplength=max(80, width - padding))
+        except Exception:  # pragma: no cover
+            pass
+
+    def _apply_width(self, width: int) -> None:
+        """把当前宽度套到内容帧和所有登记过的换行标签上。
+
+        宽度没变就直接返回：调用方之一是 ``<Configure>`` 回调，而改换行宽度本身
+        会让内容重新排版、可能又触发滚动条显隐（进而改变画布宽度），
+        加这道闸门可以避免两边互相触发。
+        """
+        width = max(1, width)
+        if width == self._applied_width:
+            return
+        self._applied_width = width
+        self.canvas.itemconfigure(self._window_id, width=width)
+        for label, padding in self._wrapped:
+            self._set_wraplength(label, padding, width)
+
     def refresh(self) -> None:
         """同步内容宽度、换行宽度与 scrollregion。"""
         self.canvas.update_idletasks()
-        width = max(1, self.canvas.winfo_width())
-        self.canvas.itemconfigure(self._window_id, width=width)
-        for label, padding in self._wrapped:
-            try:
-                if label.winfo_exists():
-                    label.configure(wraplength=max(80, width - padding))
-            except Exception:  # pragma: no cover
-                continue
+        self._apply_width(self.canvas.winfo_width())
         self.canvas.update_idletasks()
         self._update_scrollregion()
         self._update_scrollbar_visibility()
@@ -263,7 +524,9 @@ class ScrollableFrame:
         self._update_scrollbar_visibility()
 
     def _on_canvas_configure(self, event: Any) -> None:
-        self.canvas.itemconfigure(self._window_id, width=max(1, event.width))
+        # 这里也必须重算换行宽度：窗口从「还没排版」变成有真实宽度时只发这一次
+        # Configure，漏掉它，文字就会一直按量到的那个小宽度换行（Windows 上尤其明显）。
+        self._apply_width(event.width)
         self._update_scrollregion()
 
     def _on_scroll(self, first: float, last: float) -> None:

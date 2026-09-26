@@ -43,7 +43,7 @@ from .telemetry import (
     record_run_metrics,
     set_enabled as set_telemetry_enabled,
 )
-from .widgets import MouseWheelRouter, ScrollableFrame, UiScale, fit_dialog
+from .widgets import FlowGrid, FlowRow, MouseWheelRouter, ScrollableFrame, UiScale, fit_dialog, wrap_to_self
 from .llm import list_models, provider_by_id, set_provider_model
 from .workspace import BugCompassError
 
@@ -151,6 +151,9 @@ def run_gui() -> int:
         # 三条路径：编号用圆圈数字，颜色即优先级（已否定路径另行置灰）。
         PATH_MARKS = "①②③④⑤⑥⑦⑧⑨⑩"
         PATH_ACCENTS = {"high": ORANGE, "medium": YELLOW, "low": GREEN}
+        # 概览卡片右侧那一列占掉的宽度：状态面板 minsize 210 + 间距 18 + 卡片内边距 36，
+        # 再加 20 像素余量。卡片里的长文本按「自己这一列」换行，才不会顶破格子。
+        SUMMARY_SIDE_COLUMN = 210 + 18 + 36 + 20
 
         def __init__(self) -> None:
             super().__init__()
@@ -158,8 +161,11 @@ def run_gui() -> int:
             self.settings = load_settings()
             set_language(str(self.settings.get("language", "zh")))
             self.title(tr('BugCompass — Blender Bug 助手 · v{}').format(__version__))
-            self.geometry("1120x760")
-            self.minsize(940, 650)
+            # 最小宽度：侧栏 255 + 追问面板 ~361 + 滚动条与间距 + 卡片区至少 480。
+            # 比这更窄时右侧面板会把卡片区压到几十像素，卡片里的文字只能竖着排。
+            min_width = min(1180, self.winfo_screenwidth() - 80)
+            self.geometry(f"{min_width}x760")
+            self.minsize(min_width, 650)
             self.configure(background=self.BACKGROUND)
 
             self.controller = GuiController()
@@ -526,34 +532,47 @@ def run_gui() -> int:
         def _build_result_page(self, tk_module: Any, ttk_module: Any) -> None:
             page = self.result_page
             page.columnconfigure(0, weight=1)
-            page.rowconfigure(4, weight=1)
+            page.rowconfigure(5, weight=1)
             header = ttk_module.Frame(page, style="App.TFrame")
             header.grid(row=0, column=0, sticky="ew", pady=(0, 14))
             ttk_module.Label(header, text="INVESTIGATION WORKSPACE", style="Eyebrow.TLabel").pack(anchor="w")
             ttk_module.Label(header, text=tr("调查工作台"), style="Title.TLabel").pack(anchor="w", pady=(4, 8))
             self.result_flow = ttk_module.Frame(header, style="App.TFrame")
-            self.result_flow.pack(anchor="w")
+            self.result_flow.pack(fill="x")
+            # 流程条每渲染一次就换一个新的 FlowRow（旧的连同控件一起销毁），
+            # 免得旧控件留在它的登记表里。窄窗口下五个步骤片会折行，而不是被裁掉。
+            self.flow_row: FlowRow | None = None
             # 「下一步」引导条：随时只推荐一个此刻最该做的动作（内容随案件状态刷新）。
             self.next_step_frame = ttk_module.Frame(header, style="Elevated.TFrame", padding=(14, 11))
             self.next_step_frame.pack(fill="x", pady=(12, 0))
-            self.next_step_label = ttk_module.Label(
+            self.next_step_label = wrap_to_self(ttk_module.Label(
                 self.next_step_frame, text="", background=self.SURFACE_ALT, foreground=self.MUTED,
                 font=self._font("SF Pro Text", 10, "bold"), justify="left", wraplength=560, anchor="w",
-            )
-            self.next_step_label.pack(side="left", fill="x", expand=True)
+            ))
+            # 按钮要先于标签进入 pack 队列：Tk 空间不够时从**最后**摆放的控件开始压缩，
+            # 每次刷新都重新 pack 按钮会把它挤成一条 3 像素的竖缝（主按钮直接消失）。
+            # 标签留在队列末尾挨压，它本来就会按分到的宽度换行。
             self.next_step_button = ttk_module.Button(self.next_step_frame, text="", command=self._run_next_step, style="Primary.TButton")
+            self.next_step_button.pack(side="right", padx=(12, 0))
+            self.next_step_label.pack(side="left", fill="x", expand=True)
 
             summary_card = ttk_module.LabelFrame(page, text=tr("案件概览"), style="Dark.TLabelframe", padding=16)
             summary_card.grid(row=1, column=0, sticky="ew", pady=(0, 10))
             summary_card.columnconfigure(0, weight=1)
             summary_card.columnconfigure(1, minsize=210)
-            ttk_module.Label(summary_card, textvariable=self.result_summary_var, style="Body.TLabel", justify="left", wraplength=560).grid(row=0, column=0, sticky="w")
+            # 概览里有仓库路径、案件路径这类长串，要按可用宽度换行才不会在中间断开。
+            # 此刻滚动容器还没建好（下面才建），所以先记下来，建好后立刻登记。
+            self.summary_label = ttk_module.Label(summary_card, textvariable=self.result_summary_var, style="Body.TLabel", justify="left")
+            self.summary_label.grid(row=0, column=0, sticky="ew")
             codex_panel = ttk_module.Frame(summary_card, style="Elevated.TFrame", padding=(14, 11))
             codex_panel.grid(row=0, column=1, rowspan=2, sticky="ne", padx=(18, 0))
             self.codex_status_label = ttk_module.Label(codex_panel, textvariable=self.codex_status_var, background=self.SURFACE_ALT, foreground=self.MUTED, font=self._font("SF Pro Text", 11, "bold"))
             self.codex_status_label.pack(anchor="w")
-            ttk_module.Label(codex_panel, textvariable=self.codex_status_detail_var, background=self.SURFACE_ALT, foreground=self.MUTED, font=self._font("SF Pro Text", 9), wraplength=190, justify="left").pack(anchor="w", pady=(4, 0))
-            ttk_module.Label(summary_card, textvariable=self.result_hint_var, style="Status.TLabel").grid(row=1, column=0, sticky="w", pady=(6, 0))
+            # 这行状态最长时比面板还宽：按自己的实际宽度换行，别写死 190（面板比它窄）。
+            self._auto_wrap_label(codex_panel, textvariable=self.codex_status_detail_var, background=self.SURFACE_ALT, foreground=self.MUTED, font=self._font("SF Pro Text", 9), justify="left").pack(fill="x", pady=(4, 0))
+            # 提示行也被右边那一列挤：登记换行，否则窄窗口下会少掉半句话。
+            self.hint_label = ttk_module.Label(summary_card, textvariable=self.result_hint_var, style="Status.TLabel")
+            self.hint_label.grid(row=1, column=0, sticky="w", pady=(6, 0))
             self.details_button = ttk_module.Button(summary_card, text=tr("查看环境详情"), command=self._toggle_details, style="Ghost.TButton")
             self.details_button.grid(row=2, column=0, sticky="w", pady=(8, 0))
             ttk_module.Button(summary_card, text=tr("整理可复现报告包…"), command=self._open_repro_report_dialog, style="Action.TButton").grid(row=2, column=1, sticky="e", pady=(8, 0))
@@ -561,26 +580,31 @@ def run_gui() -> int:
             self.details_text = tk_module.Text(self.details_frame, height=7, wrap="none", font=self._font("SF Mono", 9), relief="flat", borderwidth=0, background=self.SURFACE_ALT, foreground=self.MUTED, padx=10, pady=10)
             self.details_text.pack(fill="both", expand=True, pady=(6, 0))
 
-            actions = ttk_module.Frame(page, style="App.TFrame")
-            actions.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+            # 动作行：按钮多，窄窗口或右侧面板占位时一行放不下，交给 FlowRow 自动折行，
+            # 否则最右边的按钮会被窗口边缘裁成半截（「停止调查」曾经只剩「停止调」）。
+            self.actions_row = FlowRow(page, ttk_module)
+            self.actions_row.frame.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+            actions = self.actions_row.frame
             self.copy_button = ttk_module.Button(actions, text=tr("复制调查指令（备用）"), command=self._copy_instruction, style="Action.TButton")
-            self.copy_button.pack(side="left")
-            ttk_module.Button(actions, text=tr("刷新结果"), command=self._refresh_current_case, style="Action.TButton").pack(side="left", padx=10)
-            ttk_module.Button(actions, text=tr("新建另一个调查"), command=self._new_another, style="Action.TButton").pack(side="left")
+            self.actions_row.add(self.copy_button)
+            self.actions_row.add(ttk_module.Button(actions, text=tr("刷新结果"), command=self._refresh_current_case, style="Action.TButton"))
+            self.actions_row.add(ttk_module.Button(actions, text=tr("新建另一个调查"), command=self._new_another, style="Action.TButton"))
             self.continue_button = ttk_module.Button(actions, text=tr("继续调查  ▶"), command=self._continue_investigation, style="Primary.TButton", state="disabled")
-            self.continue_button.pack(side="left", padx=(10, 0))
+            self.actions_row.add(self.continue_button)
             self.cancel_button = ttk_module.Button(actions, text=tr("停止调查  ■"), command=self._cancel_investigation, style="Action.TButton", state="disabled")
-            self.cancel_button.pack(side="left", padx=(8, 0))
-            ttk_module.Button(actions, text=tr("备份"), command=self._backup_workspace, style="Action.TButton").pack(side="left", padx=(8, 0))
-            ttk_module.Button(actions, text=tr("恢复备份…"), command=self._restore_backup_dialog, style="Action.TButton").pack(side="left", padx=(8, 0))
-            ttk_module.Button(actions, text=tr("导出诊断包"), command=self._export_diagnostics, style="Action.TButton").pack(side="left", padx=(8, 0))
-            ttk_module.Button(actions, text=tr("⚙ 设置"), command=self._open_settings, style="Ghost.TButton").pack(side="left", padx=(8, 0))
+            self.actions_row.add(self.cancel_button)
+            self.actions_row.add(ttk_module.Button(actions, text=tr("备份"), command=self._backup_workspace, style="Action.TButton"))
+            self.actions_row.add(ttk_module.Button(actions, text=tr("恢复备份…"), command=self._restore_backup_dialog, style="Action.TButton"))
+            self.actions_row.add(ttk_module.Button(actions, text=tr("导出诊断包"), command=self._export_diagnostics, style="Action.TButton"))
+            # 「设置」侧边栏底部已有入口，这里不再重复放一个。
             self.submit_judgment_button = ttk_module.Button(actions, text=tr("提交根因判断"), command=self._open_judgment_dialog, style="Primary.TButton")
             self.reveal_button = ttk_module.Button(actions, text=tr("揭晓真实修复"), command=self._reveal_practice, style="Action.TButton")
-            ttk_module.Label(actions, textvariable=self.copy_status_var, style="PageStatus.TLabel").pack(side="left", padx=12)
+            # 状态文字独占一行：它随内容变长，挤在按钮行里会把按钮推到裁切区。
+            self.actions_status = ttk_module.Label(page, textvariable=self.copy_status_var, style="PageStatus.TLabel")
+            self.actions_status.grid(row=3, column=0, sticky="w", pady=(0, 8))
 
             timeline_row = ttk_module.Frame(page, style="App.TFrame")
-            timeline_row.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+            timeline_row.grid(row=4, column=0, sticky="ew", pady=(0, 10))
             ttk_module.Label(timeline_row, text="LIVE", style="Eyebrow.TLabel").pack(side="left", padx=(0, 12))
             self.timeline = tk_module.Listbox(timeline_row, height=2, borderwidth=0, highlightthickness=0, background=self.SURFACE_ALT, foreground=self.MUTED, selectbackground=self.SURFACE_ALT, activestyle="none", font=self._font("SF Pro Text", 9))
             self.timeline.pack(side="left", fill="x", expand=True, ipady=4)
@@ -593,36 +617,51 @@ def run_gui() -> int:
                 self.wheel_router,
                 background=self.BACKGROUND,
             )
-            page.rowconfigure(4, weight=1)
-            self.cards_scroll.grid(row=4, column=0, sticky="nsew")
+            page.rowconfigure(5, weight=1)
+            self.cards_scroll.grid(row=5, column=0, sticky="nsew")
             self.cards_canvas = self.cards_scroll.canvas  # 兼容旧引用
             self.cards_host = self.cards_scroll.content
+            # 概览正文与提示行在滚动区域之外，但同样要跟着窗口宽度换行。
+            # 留白 = 卡片内边距 36 + 右侧运行状态面板那一列（minsize 210 + 间距 18），
+            # 再加 20 像素余量：DPI/字号放大后这些内边距还会涨，估紧了就会裁字。
+            self.cards_scroll.wrap_here(self.summary_label, self.SUMMARY_SIDE_COLUMN)
+            self.cards_scroll.wrap_here(self.hint_label, self.SUMMARY_SIDE_COLUMN)
             self.cards_scroll.set_zoom_callback(self._on_cards_zoom)
-            page.columnconfigure(1, weight=0, minsize=330)
+            # 第 1 列归滚动条（ScrollableFrame 自己摆的），追问面板放第 2 列：
+            # 挤进第 1 列会和滚动条抢同一个格子，面板画上去就把滚动条盖住了。
+            # 宽度写死一档：面板里的标签按自身宽度换行，而列的宽度又由标签的诉求决定，
+            # 两边会互相锁死——第一帧量到 330 就永远是 330，量到 500 就永远是 500。
+            # 面板内标签构造时给了初始 wraplength（见 _build_qa_panel），诉求不会撑大这一列。
+            page.columnconfigure(2, weight=0, minsize=380)
             self._build_qa_panel(tk_module, ttk_module)
 
         def _build_qa_panel(self, tk_module: Any, ttk_module: Any) -> None:
             """右侧常驻的追问面板：就当前案件反复问引擎，只存对话不改调查结果。"""
             panel = ttk_module.LabelFrame(self.result_page, text=tr("追问引擎"), style="Dark.TLabelframe", padding=14)
-            panel.grid(row=1, column=1, rowspan=4, sticky="nsew", padx=(14, 0))
+            panel.grid(row=1, column=2, rowspan=5, sticky="nsew", padx=(14, 0))
             head = ttk_module.Frame(panel, style="Card.TFrame")
             head.pack(fill="x")
             ttk_module.Label(head, text="ASK THE ENGINE", style="Eyebrow.TLabel").pack(side="left")
             self.qa_clear_button = ttk_module.Button(head, text=tr("清空对话"), command=self._clear_conversation, style="Ghost.TButton")
             self.qa_clear_button.pack(side="right")
-            ttk_module.Label(
+            # 初始 wraplength：让第一帧的诉求就落在面板宽度以内，别把这一列撑宽
+            # （撑宽之后换行宽度跟着变大，列就再也回不来了）。
+            self._auto_wrap_label(
                 panel, text=tr("就当前案件追问引擎。追问只保存对话（qa.json），不会改动调查结果。"),
-                style="Muted.TLabel", wraplength=280, justify="left",
-            ).pack(anchor="w", pady=(6, 2))
+                style="Muted.TLabel", justify="left", wraplength=320,
+            ).pack(fill="x", pady=(6, 2))
             # 引擎名单独一行常驻：状态行只报当下发生的事，不该把它顶掉。
-            ttk_module.Label(panel, textvariable=self.qa_engine_var, style="Muted.TLabel", wraplength=280, justify="left").pack(
-                anchor="w", pady=(0, 8)
-            )
+            self._auto_wrap_label(
+                panel, textvariable=self.qa_engine_var, style="Muted.TLabel", justify="left", wraplength=320,
+            ).pack(fill="x", pady=(0, 8))
 
             self.qa_transcript = tk_module.Text(
                 panel, wrap="word", state="disabled", relief="flat", borderwidth=0, highlightthickness=1,
                 highlightbackground=self.BORDER, background=self.SURFACE_ALT, foreground=self.TEXT,
                 padx=12, pady=10, font=self._font("SF Pro Text", 10), cursor="arrow",
+                # width/height 是「字符数」的默认尺寸诉求：不写死就会按 Tk 默认的 80×24
+                # 向父容器要 600 多像素，把左边的案件栏挤窄。给 1，让布局说了算。
+                width=1, height=1,
             )
             self.qa_transcript.pack(fill="both", expand=True)
             self.qa_transcript.tag_configure("user", foreground=self.ORANGE, font=self._font("SF Pro Text", 10, "bold"))
@@ -631,7 +670,7 @@ def run_gui() -> int:
             self.qa_transcript.tag_configure("error", foreground=self.RED, font=self._font("SF Pro Text", 10))
 
             self.qa_input = tk_module.Text(
-                panel, height=3, wrap="word", relief="flat", borderwidth=0, highlightthickness=1,
+                panel, height=3, width=1, wrap="word", relief="flat", borderwidth=0, highlightthickness=1,
                 highlightbackground=self.BORDER, highlightcolor=self.ORANGE, background=self.SURFACE_ALT,
                 foreground=self.TEXT, insertbackground=self.TEXT, selectbackground="#654127",
                 padx=10, pady=8, font=self._font("SF Pro Text", 10),
@@ -640,10 +679,14 @@ def run_gui() -> int:
             self.qa_input.bind("<Return>", self._on_qa_return)
             self.qa_input.bind("<Shift-Return>", lambda _event: None)
             row = ttk_module.Frame(panel, style="Card.TFrame")
-            row.pack(fill="x")
             self.qa_send_button = ttk_module.Button(row, text=tr("发送  →"), command=self._ask_question, style="Primary.TButton")
             self.qa_send_button.pack(side="right")
-            ttk_module.Label(row, textvariable=self.qa_status_var, style="Muted.TLabel", wraplength=200, justify="left").pack(side="left")
+            # 状态行整行独占（提示语本来就长，挤在按钮左边只剩几十像素时会被排成一条竖线），
+            # 摆在输入框正下方：它说的是「怎么输入」，不是「按钮怎么了」。
+            self._auto_wrap_label(
+                panel, textvariable=self.qa_status_var, style="Muted.TLabel", justify="left", wraplength=320,
+            ).pack(fill="x", pady=(6, 0))
+            row.pack(fill="x", pady=(6, 0))
 
         def show_new_page(self) -> None:
             self.new_page.tkraise()
@@ -1216,8 +1259,10 @@ def run_gui() -> int:
             """顶部流程条：按案件实际走到哪一步上色（已完成绿 · 当前橙 · 未到灰）。"""
             labels = (tr("Bug 描述"), tr("调查中"), tr("三条路径"), tr("实验"), tr("结论"))
             current = FLOW_STEPS.index(step) if step in FLOW_STEPS else 0
-            for child in self.result_flow.winfo_children():
-                child.destroy()
+            if self.flow_row is not None:
+                self.flow_row.frame.destroy()
+            self.flow_row = FlowRow(self.result_flow, ttk, gap=7, row_gap=6)
+            self.flow_row.frame.pack(fill="x")
             for index, label in enumerate(labels):
                 if index < current:
                     style, text = "StepDone.TLabel", f"✓  {label}"
@@ -1225,7 +1270,7 @@ def run_gui() -> int:
                     style, text = "StepActive.TLabel", f"{index + 1}  {label}"
                 else:
                     style, text = "Step.TLabel", f"{index + 1}  {label}"
-                ttk.Label(self.result_flow, text=text, style=style).pack(side="left", padx=(0, 7))
+                self.flow_row.add(ttk.Label(self.flow_row.frame, text=text, style=style))
 
         def _render_next_step(self, view: CaseView, step: str) -> None:
             """引导条：说清「你走到哪了、现在点哪」，整页只推荐一个动作。"""
@@ -1259,7 +1304,8 @@ def run_gui() -> int:
             self.next_step_label.configure(text=text)
             if label:
                 self.next_step_button.configure(text=label, state="disabled" if self.busy else "normal")
-                self.next_step_button.pack(side="right", padx=(12, 0))
+                # before= 让按钮始终排在标签前面，别因为重新 pack 落到队尾被挤没。
+                self.next_step_button.pack(side="right", padx=(12, 0), before=self.next_step_label)
             else:
                 self.next_step_button.pack_forget()
 
@@ -1503,12 +1549,21 @@ def run_gui() -> int:
             # 内容与换行宽度最终同步（修复窄窗口/DPI 变化下长文本被裁切）。
             self.cards_scroll.refresh()
 
-        def _path_chip(self, parent: Any, text: str, *, background: str, foreground: str, **pack_options: Any) -> None:
-            """路径卡片上的小色块：颜色即含义（优先级 / 状态）。"""
-            ttk.Label(
+        def _path_chip(self, parent: Any, text: str, *, background: str, foreground: str, row: "FlowRow | None" = None, **pack_options: Any) -> Any:
+            """路径卡片上的小色块：颜色即含义（优先级 / 状态）。
+
+            ``row`` 给的是折行容器时交给它排（窄窗口下自动换行而不是被裁掉），
+            否则按 ``pack_options`` 直接 pack。
+            """
+            chip = ttk.Label(
                 parent, text=text, background=background, foreground=foreground,
                 font=self._font("SF Pro Text", 9, "bold"), padding=(8, 3),
-            ).pack(**pack_options)
+            )
+            if row is not None:
+                row.add(chip)
+            else:
+                chip.pack(**pack_options)
+            return chip
 
         def _render_paths_header(self, hypotheses: list[dict[str, Any]]) -> None:
             """三条路径的分区标题：先讲清楚颜色与顺序，再列卡片。"""
@@ -1517,19 +1572,19 @@ def run_gui() -> int:
             ttk.Label(header, text="THREE INVESTIGATION PATHS", background=self.SURFACE, foreground=self.ORANGE, font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
             ttk.Label(header, text=tr("三条路径"), style="Heading.TLabel").pack(anchor="w", pady=(4, 6))
             self._wrap_label(header, text=tr("由调查引擎给出的三条根因假设，按优先级从高到低排列；首选路径已标出。"), style="Muted.TLabel", justify="left").pack(anchor="w")
-            legend = ttk.Frame(header, style="Surface.TFrame")
-            legend.pack(fill="x", pady=(10, 0))
+            legend = FlowRow(header, ttk, gap=6, row_gap=6)
+            legend.frame.pack(fill="x", pady=(10, 0))
             for name, color in ((tr("高优先级"), self.ORANGE), (tr("中优先级"), self.YELLOW), (tr("低优先级"), self.GREEN)):
-                self._path_chip(legend, name, background=color, foreground="#17120E", side="left", padx=(0, 6))
+                self._path_chip(legend.frame, name, background=color, foreground="#17120E", row=legend)
             refuted = sum(1 for item in hypotheses if item.get("status") == "rejected")
-            ttk.Label(legend, text=tr("已否定 {} 条").format(refuted), style="Muted.TLabel").pack(side="left", padx=(10, 0))
+            legend.add(ttk.Label(legend.frame, text=tr("已否定 {} 条").format(refuted), style="Muted.TLabel"))
 
         def _render_empty_paths(self) -> None:
             """结果还没到：先把三条路径的位置摆出来，结构一眼可见。"""
             empty = ttk.Frame(self.cards_host, style="Surface.TFrame", padding=24)
             empty.pack(fill="x", pady=12)
             ttk.Label(empty, text=tr("◌  正在等待调查路径"), style="Heading.TLabel").pack(anchor="w")
-            ttk.Label(empty, text=tr("调查完成后，这里会出现三条有证据、可否定、可继续深入的路径。"), style="Muted.TLabel").pack(anchor="w", pady=(5, 0))
+            self._auto_wrap_label(empty, text=tr("调查完成后，这里会出现三条有证据、可否定、可继续深入的路径。"), style="Muted.TLabel", justify="left").pack(fill="x", pady=(5, 0))
             slots = ttk.Frame(empty, style="Surface.TFrame")
             slots.pack(fill="x", pady=(16, 0))
             for column, mark in enumerate(self.PATH_MARKS[:3]):
@@ -1537,7 +1592,7 @@ def run_gui() -> int:
                 slot = ttk.Frame(slots, style="Elevated.TFrame", padding=(14, 12))
                 slot.grid(row=0, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0))
                 ttk.Label(slot, text=mark, background=self.SURFACE_ALT, foreground=self.SUBTLE, font=self._font("SF Pro Display", 20, "bold")).pack(anchor="w")
-                ttk.Label(slot, text=tr("等待调查结果…"), background=self.SURFACE_ALT, foreground=self.SUBTLE, font=self._font("SF Pro Text", 10)).pack(anchor="w", pady=(6, 0))
+                self._auto_wrap_label(slot, text=tr("等待调查结果…"), background=self.SURFACE_ALT, foreground=self.SUBTLE, font=self._font("SF Pro Text", 10), justify="left").pack(fill="x", pady=(6, 0))
 
         def _render_path_card(self, data: dict[str, Any], item: dict[str, Any], index: int, preferred_id: str | None) -> None:
             """单条路径：左侧色条＝优先级配色，徽章行＝优先级 / 首选 / 状态。"""
@@ -1566,7 +1621,7 @@ def run_gui() -> int:
             title_row = ttk.Frame(content, style="Card.TFrame")
             title_row.pack(fill="x", pady=(10, 0))
             title_font = self._font("SF Pro Display", 15, "bold", "overstrike") if rejected else self._font("SF Pro Display", 15, "bold")
-            ttk.Label(title_row, text=item.get("title", tr("未命名路径")), style="Heading.TLabel", font=title_font, foreground=self.MUTED if rejected else self.TEXT).pack(side="left")
+            self._auto_wrap_label(title_row, text=item.get("title", tr("未命名路径")), style="Heading.TLabel", font=title_font, foreground=self.MUTED if rejected else self.TEXT, justify="left").pack(side="left", fill="x", expand=True)
             self._wrap_label(content, text=tr("假设：{}").format(item.get("claim", "")), style="Body.TLabel", justify="left", foreground=self.MUTED if rejected else self.TEXT).pack(anchor="w", pady=(8, 12))
             ttk.Label(content, text=tr("当前依据"), style="Muted.TLabel", font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
             for basis in item.get("basis", []):
@@ -1595,11 +1650,12 @@ def run_gui() -> int:
             next_box = ttk.Frame(content, style="Elevated.TFrame", padding=10)
             next_box.pack(fill="x", pady=(10, 8))
             self._wrap_label(next_box, text=tr('下一步  →  {}').format(item.get('next_step', '')), background=self.SURFACE_ALT, foreground=self.TEXT, justify="left", font=self._font("SF Pro Text", 10, "bold")).pack(anchor="w")
-            buttons = ttk.Frame(content, style="Card.TFrame")
-            buttons.pack(anchor="w", pady=(4, 0))
-            ttk.Button(buttons, text=tr("查看证据"), command=lambda h=item: self._show_evidence(h), style="Action.TButton").pack(side="left")
-            ttk.Button(buttons, text=tr("深入调查  →"), command=lambda h=item: self._run_followup("deepen", h.get("id")), style="Primary.TButton").pack(side="left", padx=8)
-            ttk.Button(buttons, text=tr("否定路径"), command=lambda h=item: self._reject_path(h.get("id")), style="Ghost.TButton").pack(side="left")
+            # 三个按钮并排比卡片还宽：交给折行容器，窄窗口下换行而不是把「否定路径」挤成一条缝。
+            buttons = FlowRow(content, ttk, gap=8, row_gap=6)
+            buttons.frame.pack(fill="x", pady=(4, 0))
+            buttons.add(ttk.Button(buttons.frame, text=tr("查看证据"), command=lambda h=item: self._show_evidence(h), style="Action.TButton"))
+            buttons.add(ttk.Button(buttons.frame, text=tr("深入调查  →"), command=lambda h=item: self._run_followup("deepen", h.get("id")), style="Primary.TButton"))
+            buttons.add(ttk.Button(buttons.frame, text=tr("否定路径"), command=lambda h=item: self._reject_path(h.get("id")), style="Ghost.TButton"))
             for experiment in [e for e in data.get("suggested_experiments", []) if e.get("hypothesis_id") == item.get("id")]:
                 self._render_experiment_card(content, experiment)
 
@@ -1608,13 +1664,15 @@ def run_gui() -> int:
             panel.pack(fill="x", pady=(0, 10))
             title_row = ttk.Frame(panel, style="Card.TFrame")
             title_row.pack(fill="x", pady=(0, 8))
-            ttk.Label(title_row, text=tr("拖动卡片整理逻辑；从橙色圆点拖到另一张卡片连线；空白处拖动可平移；Ctrl+滚轮缩放。"), style="Muted.TLabel").pack(side="left")
             buttons = ttk.Frame(title_row, style="Card.TFrame")
-            buttons.pack(side="right")
+            buttons.pack(anchor="e")
             ttk.Button(buttons, text=tr("＋ 添加节点"), command=self._add_causal_node, style="Ghost.TButton").pack(side="left", padx=(6, 0))
             ttk.Button(buttons, text=tr("⛶ 自动布局"), command=self._auto_layout_causal, style="Ghost.TButton").pack(side="left", padx=(6, 0))
             ttk.Button(buttons, text=tr("⊞ 适应内容"), command=self._fit_causal_view, style="Ghost.TButton").pack(side="left", padx=(6, 0))
             ttk.Button(buttons, text="1:1", command=self._reset_causal_view, style="Ghost.TButton").pack(side="left", padx=(6, 0))
+            # 说明文字另起一行、占满整行：和按钮挤在同一行时，窄窗口下只剩几十像素，
+            # 文字会被排成一列竖条。
+            self._auto_wrap_label(title_row, text=tr("拖动卡片整理逻辑；从橙色圆点拖到另一张卡片连线；空白处拖动可平移；Ctrl+滚轮缩放。"), style="Muted.TLabel", justify="left").pack(fill="x", pady=(8, 0))
             nodes = graph.get("nodes", []) if isinstance(graph, dict) else []
             edges = graph.get("edges", []) if isinstance(graph, dict) else []
             self.causal_graph = {
@@ -1624,7 +1682,7 @@ def run_gui() -> int:
             if not nodes:
                 self.mindmap = None
                 self.causal_canvas = None
-                ttk.Label(panel, text=tr("Codex 完成调查后会在这里生成“触发条件 → 状态变化 → 可见故障”的因果链。"), style="Body.TLabel", justify="left").pack(anchor="w", pady=8)
+                self._auto_wrap_label(panel, text=tr("Codex 完成调查后会在这里生成“触发条件 → 状态变化 → 可见故障”的因果链。"), style="Body.TLabel", justify="left").pack(fill="x", pady=8)
                 return
             colors = {
                 "surface": self.SURFACE,
@@ -2106,11 +2164,27 @@ def run_gui() -> int:
                 except BugCompassError:
                     pass
 
-        def _wrap_label(self, parent: Any, **kwargs: Any) -> Any:
-            """创建卡片里的自适应换行标签（窗口变窄/DPI 变化时不会被裁切）。"""
+        def _wrap_label(self, parent: Any, padding: int = 56, **kwargs: Any) -> Any:
+            """创建卡片里的自适应换行标签（窗口变窄/DPI 变化时不会被裁切）。
+
+            ``padding`` 是标签到滚动区域两侧的留白估计；标签没有占满整张卡片时
+            （例如右边还有一列状态面板），要把那一列也算进来。
+            """
             label = ttk.Label(parent, **kwargs)
-            self.cards_scroll.wrap_here(label)
+            self.cards_scroll.wrap_here(label, padding)
             return label
+
+        def _auto_wrap_label(self, parent: Any, **kwargs: Any) -> Any:
+            """整行说明文字：按**自己的实际宽度**换行。
+
+            这类标签不跟别的东西抢同一行，宽度完全由父容器给。直接读自己的宽度比
+            估留白准，窄窗口下也不会留下半句话——卡片里说不完的说明文字都用它。
+
+            摆放时必须 ``pack(fill="x")``：不带 fill 的标签宽度由**自己的诉求**决定，
+            而诉求又随换行宽度变，两者会互相锁死——第一次量到的窄宽度写在标签上，
+            文字就被排成一条竖线（``当前引擎：`` 一行一个词）。填满整行才有稳定的宽度。
+            """
+            return wrap_to_self(ttk.Label(parent, **kwargs))
 
         # -------------------------------------------------------------- 指标
         def _render_metrics_card(self, view: CaseView) -> None:
@@ -2125,26 +2199,25 @@ def run_gui() -> int:
             header = ttk.Frame(panel, style="Card.TFrame")
             header.pack(fill="x")
             if metrics is None or not metrics.runs:
-                ttk.Label(header, text=tr("还没有 Codex 运行记录；运行后这里会显示模型、耗时、工具轮次与成本。"), style="Muted.TLabel").pack(anchor="w")
+                self._auto_wrap_label(header, text=tr("还没有 Codex 运行记录；运行后这里会显示模型、耗时、工具轮次与成本。"), style="Muted.TLabel", justify="left").pack(fill="x")
                 return
             totals = metrics.to_dict()["totals"]
             models = "、".join(metrics.models) or tr("未知")
             runs = len(metrics.runs)
             self._wrap_label(header, text=tr('模型  {}   ·   运行 {} 次').format(models, runs), style="Heading.TLabel").pack(anchor="w")
-            grid = ttk.Frame(panel, style="Card.TFrame")
-            grid.pack(fill="x", pady=(8, 0))
+            # 格子宽度不够时减少列数，而不是把每列压窄——压窄了 token 数就被裁成半截。
+            grid = FlowGrid(panel, ttk, gap=8, row_gap=6, max_columns=3)
+            grid.frame.pack(fill="x", pady=(8, 0))
             columns = (
                 (tr("累计耗时"), format_duration(totals["duration_seconds"])),
                 (tr("对话轮次"), str(totals["turns"])),
                 (tr("工具调用"), str(totals["tool_calls"])),
-                (tr("输入 token"), f"{totals['input_tokens']:,}tr(（缓存 ){totals['cached_input_tokens']:,}）"),
+                (tr("输入 token"), tr("{}（缓存 {}）").format(f"{totals['input_tokens']:,}", f"{totals['cached_input_tokens']:,}")),
                 (tr("输出 token"), f"{totals['output_tokens']:,}"),
                 (tr("估计成本"), format_cost(totals["estimated_cost_usd"])),
             )
-            for index, (name, value) in enumerate(columns):
-                box = ttk.Frame(grid, style="Elevated.TFrame", padding=(10, 7))
-                box.grid(row=index // 3, column=index % 3, sticky="ew", padx=4, pady=3)
-                grid.columnconfigure(index % 3, weight=1)
+            for name, value in columns:
+                box = grid.add(ttk.Frame(grid.frame, style="Elevated.TFrame", padding=(10, 7)))
                 ttk.Label(box, text=name, background=self.SURFACE_ALT, foreground=self.MUTED, font=self._font("SF Pro Text", 9, "bold")).pack(anchor="w")
                 ttk.Label(box, text=value, background=self.SURFACE_ALT, foreground=self.TEXT, font=self._font("SF Pro Text", 11, "bold")).pack(anchor="w", pady=(2, 0))
             telemetry_state = tr("已开启（仅计数，且需再手动导出才会离开本机）") if telemetry_enabled() else tr("未开启")
