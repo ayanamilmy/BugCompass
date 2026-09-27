@@ -578,13 +578,22 @@ EN: dict[str, str] = {
     '案件已经建好，还没有调查结果。下一步：让 {} 开始调查。': 'The case is ready but has no results yet. Next: have {} start the investigation.',
     '正在调查中，结果会自动刷新到这一页，不用重复点「开始调查」。': 'Investigation is running. Results refresh on this page automatically — no need to click Start again.',
     '先看路径 ①：{}。照它的「下一步」验证完，再回来收口。': 'Start with path ①: {}. Follow its next step, then come back to wrap up.',
+    '先查看路径 {}：{}。核对证据与「下一步」，验证后再记录判断。': 'Review path {}: {}. Check its evidence and next step before recording a judgment.',
+    '现有路径都已否定。继续调查，寻找新的证据和路径。': 'All current paths were rejected. Continue investigating for new evidence and paths.',
+    '继续调查  →': 'Continue investigating  →',
+    '查看路径 {}  →': 'View path {}  →',
     '确定根因  ✓': 'Confirm root cause  ✓',
+    '已有支持路径的实验结果。核对证据后，可以记录你的根因判断。': 'An experiment supports a path. Check the evidence before recording your root-cause judgment.',
+    '实验已有结果，但尚未支持根因路径。先核对结果并继续验证。': 'The experiment has a result, but no root-cause path is supported yet. Review it and continue verifying.',
+    '记录根因判断  →': 'Record root-cause judgment  →',
+    '记录当前判断…': 'Record current judgment…',
     '实验已经跑过。核对结果之后，就可以写下你的根因判断了。': 'An experiment has already run. Once you have checked the result, write down your root-cause judgment.',
     '结论已经记录。下一步：整理可复现报告包，或到「报告 Bug」页导入这份调查。': 'Conclusion recorded. Next: build the reproducible report package, or import this investigation from the Report a Bug page.',
     '这是历史练习：先提交根因判断，再揭晓真实修复。': 'This is a historic practice case: submit your root-cause judgment first, then reveal the real fix.',
     '还没有调查路径': 'No investigation paths yet',
     '先让调查引擎给出三条路径，再来收口。': 'Let the investigation engine produce three paths before wrapping up.',
     '确定根因': 'Confirm root cause',
+    '记录根因判断': 'Record root-cause judgment',
     '选一条你采信的路径，用一句话写下判断。这一步只记录你的结论，不会改动调查结果。': 'Pick the path you trust and write your judgment in one sentence. This only records your conclusion; it does not change the investigation.',
     '采信路径': 'Chosen path',
     '根因判断': 'Root-cause judgment',
@@ -617,6 +626,10 @@ EN: dict[str, str] = {
     '追问失败：{}': 'Asking failed: {}',
     '追问没有成功。': 'The question was not answered.',
     '回答完成，追问记录已保存在案件里。': 'Answered — the exchange is saved in the case.',
+    '回答未能保存：{}。请复制上方回答。': 'The answer could not be saved: {}. Copy the answer above.',
+    '回答未保存，请先复制：': 'Answer not saved; copy it first:',
+    '追问还在进行，完成后再开始调查。': 'The follow-up is still running. Wait for it to finish before starting an investigation.',
+    '已保存超时前完成的调查结果；请复核证据，必要时继续调查。': 'Saved the investigation result completed before timeout. Review its evidence and continue investigating if needed.',
     '只删除问答记录（qa.json），调查结果不受影响。确定清空吗？': 'This deletes only the conversation (qa.json); the investigation is unaffected. Clear it?',
     '对话已清空，调查结果原样保留。': 'Conversation cleared; the investigation is untouched.',
 }
@@ -636,4 +649,3 @@ def tr(text: str) -> str:
     if _LANGUAGE == "en":
         return EN.get(text, text)
     return text
-

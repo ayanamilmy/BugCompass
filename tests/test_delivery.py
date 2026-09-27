@@ -73,6 +73,11 @@ class TelemetryTests(IsolatedHomeTestCaseMixin, __import__("unittest").TestCase)
 
 
 class MetricsTests(__import__("unittest").TestCase):
+    def test_zero_return_code_is_success(self) -> None:
+        with TemporaryDirectory() as tmp:
+            run = metrics.run_metrics_from_summary({"case_id": "c", "return_code": 0}, tmp)
+        self.assertEqual(run.status, "ok")
+
     def test_parse_codex_log_counts(self) -> None:
         with TemporaryDirectory() as tmp:
             log = Path(tmp) / "run.jsonl"

@@ -51,7 +51,8 @@ def init_workspace(workspace_path: str | Path, repo_path: str | Path) -> Workspa
     if workspace == repo or repo in workspace.parents:
         raise BugCompassError("工作区不能位于 Blender 源码仓库内部，以免写入目标仓库。")
     if workspace.exists():
-        raise BugCompassError(f"工作区已经存在，不会覆盖：{workspace}")
+        if not workspace.is_dir() or any(workspace.iterdir()):
+            raise BugCompassError(f"工作区已经存在且不为空，不会覆盖：{workspace}")
 
     project = Project(
         schema_version=1,
@@ -60,7 +61,7 @@ def init_workspace(workspace_path: str | Path, repo_path: str | Path) -> Workspa
         repo_path=str(repo),
         created_at=utc_now(),
     )
-    workspace.mkdir(parents=True)
+    workspace.mkdir(parents=True, exist_ok=True)
     write_json(workspace / "project.json", project.to_dict())
     return Workspace(workspace, project)
 

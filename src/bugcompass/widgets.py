@@ -228,8 +228,8 @@ class FlowRow:
     诉求宽度重新分行——宽度够就一行放完，不够就换行，一个控件都不会丢。
     """
 
-    def __init__(self, parent: Any, ttk_module: Any, *, gap: int = 10, row_gap: int = 8) -> None:
-        self.frame = ttk_module.Frame(parent, style="App.TFrame")
+    def __init__(self, parent: Any, ttk_module: Any, *, gap: int = 10, row_gap: int = 8, style: str = "App.TFrame") -> None:
+        self.frame = ttk_module.Frame(parent, style=style)
         self.gap = gap
         self.row_gap = row_gap
         self._items: list[Any] = []

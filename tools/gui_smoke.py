@@ -295,6 +295,62 @@ def main() -> int:
         app._show_case(view)
         app.update()
         check("结果页渲染", app.current_case is not None and app.mindmap is not None)
+        check("未验证路径先引导查看证据", app._next_step_action == "path")
+        app._run_next_step()
+        app.update()
+        check("查看路径按钮滚动到首选路径", app.cards_scroll.canvas.yview()[0] > 0)
+        app.cards_scroll.canvas.yview_moveto(0)
+        paths = view.investigation["hypotheses"]
+        for path in paths:
+            path["status"] = "rejected"
+        app._render_next_step(view, "experiment")
+        check("全部路径否定后引导继续调查", app._next_step_action == "start")
+        for path in paths:
+            path["status"] = "active"
+        app._render_next_step(view, "paths")
+
+        # 追问期间不能并发启动调查；写盘失败也不能谎称回答已保存。
+        app.ask_busy = True
+        with mock.patch.object(app.controller, "set_case_status") as set_status:
+            app._continue_investigation()
+        check("追问期间不更改调查状态", not set_status.called)
+        from bugcompass import qa as _qa_mod
+        from bugcompass.workspace import BugCompassError as _BugCompassError
+        app.ask_case_id = case_id
+        app.events.put(("ask_done", (view, "问题", "可复制的回答")))
+        with mock.patch.object(_qa_mod, "append_turn", side_effect=_BugCompassError("模拟写盘失败")):
+            app._poll_events()
+        check("追问保存失败给出真实状态", "未能保存" in app.qa_status_var.get())
+        check("追问保存失败仍能复制回答", "可复制的回答" in app.qa_transcript.get("1.0", "end"))
+        app._unsaved_answers.clear()
+        app._render_conversation(view.case_dir)
+        captured_history = []
+
+        class ImmediateThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        class FakeAskRunner:
+            def reset_cancellation(self):
+                pass
+
+            def ask(self, _view, _question, turns, progress=None):
+                captured_history.extend(turns)
+                return "测试回答"
+
+        app.qa_input.insert("1.0", "本次问题")
+        with mock.patch.object(app, "_engine_runner", return_value=FakeAskRunner()), \
+             mock.patch("bugcompass.gui.threading.Thread", ImmediateThread):
+            app._ask_question()
+            app._poll_events()
+        check("当前追问只传入历史对话", all(item.get("content") != "本次问题" for item in captured_history))
+        from bugcompass.codex_runner import CodexRunResult
+        app._finish_codex_run(view, CodexRunResult(-15, False, "", "", True, True))
+        app._poll_events()
+        check("超时前已保存的调查结果可见", "超时前" in app.result_hint_var.get())
 
         # 3) 滚动容器：内容应可滚动且 scrollregion 为整数
         scroll = app.cards_scroll
@@ -407,11 +463,18 @@ def main() -> int:
         check("设置含拉取模型按钮", any(isinstance(w, _ttk_smoke.Button) and "拉取" in str(w.cget("text")) for d in open_dialogs for w in _walk_smoke(d)))
         for dialog in open_dialogs:
             dialog.update_idletasks()
-            check(
-                "设置对话框高度足够容纳内容",
-                dialog.winfo_height() >= dialog.winfo_reqheight() - 10,
-                f"{dialog.winfo_height()} < 需要 {dialog.winfo_reqheight()}",
-            )
+            scroll_canvas = next((w for w in _walk_smoke(dialog) if isinstance(w, tkinter.Canvas)), None)
+            has_room = dialog.winfo_height() >= dialog.winfo_reqheight() - 10
+            if scroll_canvas is not None and not has_room:
+                scroll_canvas.yview_moveto(1)
+                dialog.update_idletasks()
+            check("设置内容可完整查看", has_room or (
+                scroll_canvas is not None and scroll_canvas.yview()[1] >= 0.99
+            ))
+            if scroll_canvas is not None:
+                content_width = scroll_canvas.winfo_children()[0].winfo_reqwidth()
+                check("设置内容横向不裁切", content_width <= scroll_canvas.winfo_width(),
+                      f"内容 {content_width}，画布 {scroll_canvas.winfo_width()}")
             dialog.destroy()
 
         # 报告包入口在当前 Case 中可用，且草稿可离线打开。

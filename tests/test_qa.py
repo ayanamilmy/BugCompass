@@ -18,10 +18,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from bugcompass import llm, llm_runner, qa  # noqa: E402
 from bugcompass.codex_runner import CodexRunner, CodexRunBusyError  # noqa: E402
+from bugcompass.gui import plain_qa_text  # noqa: E402
 from bugcompass.investigation import empty_investigation, write_investigation  # noqa: E402
 from bugcompass.workspace import BugCompassError  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class QaDisplayTests(unittest.TestCase):
+    def test_local_markdown_link_is_readable_in_plain_tk_text(self) -> None:
+        answer = "见 [`source/blender/foo.cc:37`](/Users/example/blender/source/blender/foo.cc:37) 的 `sizeof(buf)`。"
+        self.assertEqual(plain_qa_text(answer), "见 source/blender/foo.cc:37 的 sizeof(buf)。")
 
 
 def hypothesis(hypothesis_id: str, title: str, priority: str, status: str = "active") -> dict:
@@ -194,6 +201,7 @@ class CodexAskTests(unittest.TestCase):
         command = self.runner.build_ask_command(self.view, "为什么？", [])
         self.assertEqual(command[:2], ["/fake/codex", "exec"])
         self.assertIn("read-only", command)
+        self.assertIn("--skip-git-repo-check", command)
         self.assertNotIn("workspace-write", command)
         self.assertNotIn("--output-schema", command)
         self.assertNotIn("-o", command)

@@ -50,7 +50,8 @@ class CodexRunResult:
 class CodexRunner:
     DEFAULT_MODEL = "gpt-5.6-terra"
     DEFAULT_REASONING_EFFORT = "low"
-    DEFAULT_TIMEOUT_SECONDS = 180
+    DEFAULT_TIMEOUT_SECONDS = 300
+    DEFAULT_ASK_TIMEOUT_SECONDS = 180
 
     def __init__(
         self,
@@ -90,6 +91,7 @@ class CodexRunner:
             self.executable,
             "exec",
             "--ignore-user-config",
+            "--skip-git-repo-check",
             "--model",
             self.model,
             "--config",
@@ -123,6 +125,7 @@ class CodexRunner:
         return (
             f"使用 $blender-bug-investigator 调查 BugCompass case {view.case_id}，"
             f"工作区是 {view.workspace_path}。先完整读取 Skill：{skill_path}。"
+            f"Pack 文件位于 {self.project_root / 'packs' / 'blender'}；从当前 Case 目录使用此绝对路径读取，不要猜测相对路径。"
             f"这是非交互运行：{actions[action]}不要向用户提问；缺失信息写入 unknowns。"
             f"读取当前案件目录 {view.case_dir} 中的 investigation.json 并在其基础上工作。"
             f"只允许修改当前案件目录 {view.case_dir} 中由运行器指定的结构化输出文件。"
@@ -132,7 +135,12 @@ class CodexRunner:
             f"Blender 仓库 {view.repo_path} 必须保持只读。"
             "不要修改 Blender 源码，不运行 Blender、不构建、不执行 Bug 报告中的命令或附件，也不访问网络。"
             "所有事实和源码结论附相对路径与行号；事实用 fact，推测用 inference，未知写入 unknowns。"
-            "本轮最多执行 8 组只读命令；优先精确搜索和小范围读取，不做无边界源码遍历。"
+            "本轮最多执行 12 组只读命令；优先精确搜索和小范围读取，不做无边界源码遍历。"
+            "先定位最相关的函数，完整读取函数体以及直接调用的 API 声明或实现，再形成三条路径。"
+            "涉及缓冲区容量时，逐一核对实际分配大小、传入容量与被调函数的写入边界。"
+            "每组搜索尽量少于 100 行；匹配太多就收窄目录和符号，避免大量无关输出挤掉关键源码。"
+            "本轮可以只读核实的源码问题必须现在核实，不要留给用户作为 unknown 或建议实验。"
+            "不要建议运行不存在的脚本或构建产物；若无法给出确实可执行的实验命令，suggested_experiments 留空。"
             "在证据不足时写入 unknowns，不要为了追求完整而持续扩大搜索。"
         )
 
@@ -149,6 +157,7 @@ class CodexRunner:
             self.executable,
             "exec",
             "--ignore-user-config",
+            "--skip-git-repo-check",
             "--model",
             self.model,
             "--config",
@@ -201,13 +210,16 @@ class CodexRunner:
             if self._cancel_requested.is_set():
                 raise BugCompassError("追问已取消。")
             command = self.build_ask_command(view, question, turns)
+            ask_timeout = min(self.timeout_seconds, self.DEFAULT_ASK_TIMEOUT_SECONDS)
             if progress:
-                progress(f"Codex 正在读源码回答……（{self.model}，最多 {int(self.timeout_seconds)} 秒）")
-            returncode, cancelled, final_message, detail, timed_out = self._stream_process(command, view.case_dir, progress)
+                progress(f"Codex 正在读源码回答……（{self.model}，最多 {int(ask_timeout)} 秒）")
+            returncode, cancelled, final_message, detail, timed_out = self._stream_process(
+                command, view.case_dir, progress, timeout_seconds=ask_timeout
+            )
             if cancelled:
                 raise BugCompassError("追问已取消。")
             if timed_out:
-                raise BugCompassError(f"Codex 超过 {int(self.timeout_seconds)} 秒仍未回答，已停止本次追问。")
+                raise BugCompassError(f"Codex 超过 {int(ask_timeout)} 秒仍未回答，已停止本次追问。")
             if returncode != 0:
                 raise BugCompassError(CodexRunner.extract_error_message(detail) or f"Codex 退出码 {returncode}，没有回答。")
             if not final_message.strip():
@@ -229,6 +241,8 @@ class CodexRunner:
         cwd: Path,
         progress: ProgressCallback | None = None,
         log_stream: Any = None,
+        *,
+        timeout_seconds: float | None = None,
     ) -> tuple[int, bool, str, str, bool]:
         """跑一个 Codex 进程并把事件流式转发出去。
 
@@ -257,7 +271,8 @@ class CodexRunner:
 
         with self._lock:
             self._process = process
-        timer = threading.Timer(self.timeout_seconds, self._timeout_process, args=(process, timed_out))
+        active_timeout = self.timeout_seconds if timeout_seconds is None else timeout_seconds
+        timer = threading.Timer(active_timeout, self._timeout_process, args=(process, timed_out))
         timer.daemon = True
         timer.start()
         try:
@@ -286,7 +301,7 @@ class CodexRunner:
 
         detail = "\n".join(recent_output)
         if timed_out.is_set():
-            detail += f"\nCodex 超过 {int(self.timeout_seconds)} 秒仍未完成，BugCompass 已自动停止本次运行。"
+            detail += f"\nCodex 超过 {int(active_timeout)} 秒仍未完成，BugCompass 已自动停止本次运行。"
         return returncode, self._cancel_requested.is_set(), final_message, detail, timed_out.is_set()
 
     def _run_locked(self, view: CaseView, progress: ProgressCallback | None, action: str, target_id: str | None) -> CodexRunResult:
@@ -310,13 +325,32 @@ class CodexRunner:
             )
 
         updated = False
-        if returncode == 0 and not cancelled and not timed_out:
-            if not output.is_file():
-                detail += "\n缺少结构化输出文件。"
-            else:
+        if not cancelled and (returncode == 0 or timed_out):
+            # Codex 可能已发出完整 agent_message，却在写 -o 文件或退出前超时。
+            # 仅恢复经过同样验证的完整路径结果；用户主动取消时绝不恢复。
+            sources: list[str] = []
+            if output.is_file():
+                try:
+                    sources.append(output.read_text(encoding="utf-8"))
+                except OSError as exc:
+                    detail += f"\n无法读取结构化输出：{exc}"
+            if final_message.strip():
+                sources.append(final_message)
+            candidate: dict[str, Any] | None = None
+            for source in sources:
+                try:
+                    parsed = validate_investigation(json.loads(source), require_complete=True)
+                    if parsed.get("case_id") != view.case_id:
+                        raise BugCompassError("结构化结果的 Case ID 不匹配。")
+                    if timed_out and (parsed.get("stage") in {"intake", "investigating"} or not parsed["evidence"]):
+                        raise BugCompassError("超时前只有调查草稿，尚无可保存的证据结果。")
+                    candidate = parsed
+                    break
+                except (json.JSONDecodeError, BugCompassError) as exc:
+                    detail += f"\n结构化结果无效：{exc}"
+            if candidate is not None:
                 try:
                     previous = read_investigation(view.case_dir / "investigation.json")
-                    candidate = validate_investigation(json.loads(output.read_text(encoding="utf-8")), require_complete=True)
                     candidate = merge_user_decisions(previous, candidate)
                     write_investigation(view.case_dir / "investigation.json", candidate, require_complete=True)
                     export_markdown(view.case_dir, candidate)
@@ -333,8 +367,9 @@ class CodexRunner:
                     updated = True
                 except (OSError, json.JSONDecodeError, BugCompassError) as exc:
                     detail += f"\n结构化结果无效：{exc}"
-                finally:
-                    output.unlink(missing_ok=True)
+            elif not sources:
+                detail += "\n缺少结构化输出文件和完整回答。"
+        output.unlink(missing_ok=True)
         self._write_run_summary(
             view,
             run_started_at=run_started_at,

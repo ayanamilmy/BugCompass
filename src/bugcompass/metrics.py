@@ -242,7 +242,7 @@ def run_metrics_from_summary(summary: dict[str, Any], case_dir: str | Path, *, p
         status = "cancelled"
     elif summary.get("timed_out"):
         status = "timeout"
-    elif int(summary.get("return_code", -1) or -1) == 0:
+    elif summary.get("return_code") is not None and int(summary["return_code"]) == 0:
         status = "ok"
     else:
         status = "failed"
