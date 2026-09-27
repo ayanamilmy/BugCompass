@@ -3101,12 +3101,13 @@ def run_gui() -> int:
             ).pack(anchor="w", pady=(3, 8))
             if self.llm_providers:
                 provider_names = [provider.display_name for provider in self.llm_providers]
-                llm_row = ttk.Frame(llm_box, style="Surface.TFrame")
+                llm_controls = FlowRow(llm_box, ttk, gap=8, row_gap=6, style="Surface.TFrame")
+                llm_row = llm_controls.frame
                 llm_row.pack(fill="x")
                 self._llm_test_var = tk.StringVar(value=provider_names[0])
-                ttk.Label(llm_row, text=tr("服务"), style="Muted.TLabel").pack(side="left", padx=(0, 6))
+                llm_controls.add(ttk.Label(llm_row, text=tr("服务"), style="Muted.TLabel"))
                 provider_combo = ttk.Combobox(llm_row, textvariable=self._llm_test_var, values=provider_names, state="readonly", width=28, style="Dark.TCombobox")
-                provider_combo.pack(side="left")
+                llm_controls.add(provider_combo)
                 self._llm_status_var = tk.StringVar(value="")
                 ttk.Label(llm_box, textvariable=self._llm_status_var, style="Status.TLabel", justify="left").pack(anchor="w", pady=(6, 4))
 
@@ -3136,10 +3137,10 @@ def run_gui() -> int:
                         self.engine_var.set(provider.display_name)
                     self._llm_status_var.set(tr('已设为当前引擎：{}').format(provider.display_name))
 
-                ttk.Label(llm_row, text=tr("模型"), style="Muted.TLabel").pack(side="left", padx=(14, 6))
+                llm_controls.add(ttk.Label(llm_row, text=tr("模型"), style="Muted.TLabel"))
                 self._llm_model_var = tk.StringVar(value=chosen_provider().model)
                 model_combo = ttk.Combobox(llm_row, textvariable=self._llm_model_var, values=chosen_provider().model_options, width=22, style="Dark.TCombobox")
-                model_combo.pack(side="left")
+                llm_controls.add(model_combo)
 
                 def apply_model_change(*_args: Any) -> None:
                     model = self._llm_model_var.get().strip()
@@ -3208,11 +3209,11 @@ def run_gui() -> int:
                     threading.Thread(target=work, daemon=True).start()
 
                 fetch_models_btn.configure(command=fetch_models)
-                fetch_models_btn.pack(side="left", padx=(8, 0))
-                ttk.Button(llm_row, text=tr("测试连接"), command=run_test, style="Action.TButton").pack(side="left", padx=(10, 0))
-                ttk.Button(llm_row, text=tr("设为当前引擎"), command=use_provider, style="Action.TButton").pack(side="left", padx=(8, 0))
+                llm_controls.add(fetch_models_btn)
+                llm_controls.add(ttk.Button(llm_row, text=tr("测试连接"), command=run_test, style="Action.TButton"))
+                llm_controls.add(ttk.Button(llm_row, text=tr("设为当前引擎"), command=use_provider, style="Action.TButton"))
                 import_btn = ttk.Button(llm_row, text=tr("导入密钥…"), style="Primary.TButton")
-                import_btn.pack(side="left", padx=(8, 0))
+                llm_controls.add(import_btn)
                 key_hint_label = ttk.Label(llm_box, text="", style="Muted.TLabel")
                 key_hint_label.pack(anchor="w", pady=(4, 2))
 
