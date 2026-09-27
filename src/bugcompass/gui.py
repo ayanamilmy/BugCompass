@@ -986,7 +986,7 @@ def run_gui() -> int:
                             tr('实验 {} 执行完成（返回码 {}），正在请 {} 更新假设。').format(experiment_id, record['return_code'], self._engine_display_name())
                         )
                     self._run_followup("experiment", experiment_id, case_id=view.case_id)
-                elif kind == "success":
+                elif kind in ("success", "success_recovered"):
                     finished_case_id = payload.case_id
                     self.busy = False
                     self.codex_active = False
@@ -997,7 +997,10 @@ def run_gui() -> int:
                     self.progress_var.set("")
                     if self.current_case is not None and self.current_case.case_id == finished_case_id:
                         self._show_case(payload)
-                        self.result_hint_var.set(tr("{} 调查完成，结果已自动刷新。").format(self._engine_display_name()))
+                        if kind == "success_recovered":
+                            self.result_hint_var.set(tr("已保存超时前完成的调查结果；请复核证据，必要时继续调查。"))
+                        else:
+                            self.result_hint_var.set(tr("{} 调查完成，结果已自动刷新。").format(self._engine_display_name()))
                     elif self.current_case is not None:
                         self._show_case(self.controller.load_case(self.current_case.case_id))
                         self.copy_status_var.set(tr('案件 {} 的调查已完成。').format(finished_case_id))
@@ -1084,6 +1087,10 @@ def run_gui() -> int:
             if result.cancelled:
                 self.controller.set_case_status(view.case_id, "cancelled")
                 self.events.put(("cancelled", self.controller.load_case(view.case_id)))
+                return
+            if result.timed_out and result.investigation_updated:
+                self.controller.set_case_status(view.case_id, "complete")
+                self.events.put(("success_recovered", self.controller.load_case(view.case_id)))
                 return
             if result.returncode != 0:
                 self.controller.set_case_status(view.case_id, "failed")

@@ -629,6 +629,7 @@ EN: dict[str, str] = {
     '回答未能保存：{}。请复制上方回答。': 'The answer could not be saved: {}. Copy the answer above.',
     '回答未保存，请先复制：': 'Answer not saved; copy it first:',
     '追问还在进行，完成后再开始调查。': 'The follow-up is still running. Wait for it to finish before starting an investigation.',
+    '已保存超时前完成的调查结果；请复核证据，必要时继续调查。': 'Saved the investigation result completed before timeout. Review its evidence and continue investigating if needed.',
     '只删除问答记录（qa.json），调查结果不受影响。确定清空吗？': 'This deletes only the conversation (qa.json); the investigation is unaffected. Clear it?',
     '对话已清空，调查结果原样保留。': 'Conversation cleared; the investigation is untouched.',
 }

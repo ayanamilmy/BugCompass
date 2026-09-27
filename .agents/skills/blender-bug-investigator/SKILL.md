@@ -57,7 +57,7 @@ python -m bugcompass doctor --workspace <workspace>
 
 `evidence` 中每项明确标记 `fact` 或 `inference`，并记录来源类型和源码引用。`unknowns` 单独记录未知信息。
 
-`suggested_experiments` 只列本轮静态调查无法完成、且确实有助于区分路径的后续验证；没有合适实验时可以为空。每项必须提供目的、操作说明、无 shell 的命令参数数组、工作目录、预计秒数和权限。只读搜索/读取/Git 历史为 `green`；构建、测试或启动 Blender 为 `yellow`；修改源码、删除文件或 push 为 `red`。不得故意低报权限。命令不得包含 shell 拼接、重定向、管道、绝对路径或 `..`。优先提出最低权限、最低成本实验。
+`suggested_experiments` 只列本轮静态调查无法完成、且确实有助于区分路径的后续验证；没有合适实验时可以为空。每项必须提供目的、操作说明、无 shell 的命令参数数组、工作目录、预计秒数和权限。只读搜索/读取/Git 历史为 `green`；构建、测试或启动 Blender 为 `yellow`；修改源码、删除文件或 push 为 `red`。不得故意低报权限。命令不得包含 shell 拼接、重定向、管道、绝对路径或 `..`，也不得引用尚未存在的脚本或构建产物。无法给出实际可执行的命令时，将验证步骤写在路径的 `next_step`，让 `suggested_experiments` 保持空数组。优先提出最低权限、最低成本实验。
 
 继续实验调查时，读取 `experiments/<run-id>/result.json` 以及其引用的 stdout/stderr，根据真实返回码和输出设置实验 `effect`（`supports`、`weakens` 或 `inconclusive`）、结果摘要与 `latest_run`，并更新原有假设；不要重新执行命令，也不要丢弃用户否定状态。
 

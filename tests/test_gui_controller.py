@@ -25,7 +25,7 @@ from bugcompass.codex_runner import CodexRunBusyError, CodexRunner  # noqa: E402
 from bugcompass.gui_controller import GuiController, generate_case_id  # noqa: E402
 from bugcompass.gui import codex_status_for_case  # noqa: E402
 from bugcompass.experiments import classify_command  # noqa: E402
-from bugcompass.investigation import export_markdown, merge_user_decisions, write_investigation  # noqa: E402
+from bugcompass.investigation import empty_investigation, export_markdown, merge_user_decisions, write_investigation  # noqa: E402
 from bugcompass.workspace import BugCompassError  # noqa: E402
 
 
@@ -400,6 +400,8 @@ class GuiControllerTests(unittest.TestCase):
         self.assertIn("不要修改 Blender 源码", prompt)
         self.assertIn("完整读取函数体", prompt)
         self.assertIn("本轮可以只读核实", prompt)
+        self.assertIn(str(ROOT / "packs" / "blender"), prompt)
+        self.assertIn("不存在的脚本", prompt)
 
         continue_prompt = runner.build_command(view, action="continue")[-1]
         self.assertIn("继续调查当前案件", continue_prompt)
@@ -492,6 +494,30 @@ class GuiControllerTests(unittest.TestCase):
         kill_group.assert_called_once_with(12345, signal.SIGTERM)
         summary = json.loads((view.case_dir / "codex-last-run.json").read_text(encoding="utf-8"))
         self.assertTrue(summary["timed_out"])
+
+    def test_timeout_recovers_complete_answer_but_not_an_intake_draft(self) -> None:
+        view = self.controller.create_investigation(self.repo, "# Bug\n")
+        runner = CodexRunner(ROOT, executable="/fake/codex")
+        candidate = empty_investigation(view.case_id)
+        candidate["stage"] = "paths"
+        candidate["hypotheses"] = [
+            {"id": f"h{index}", "title": f"路径 {index}", "priority": priority, "source_references": []}
+            for index, priority in enumerate(("high", "medium", "low"), 1)
+        ]
+        candidate["evidence"] = [{"kind": "fact", "statement": "已读取本地源码"}]
+        with patch.object(runner, "_stream_process", return_value=(-15, False, json.dumps(candidate), "超时", True)):
+            result = runner.run(view)
+        self.assertTrue(result.timed_out)
+        self.assertTrue(result.investigation_updated)
+        saved = json.loads((view.case_dir / "investigation.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["stage"], "paths")
+
+        draft = deepcopy(candidate)
+        draft["stage"] = "intake"
+        with patch.object(runner, "_stream_process", return_value=(-15, False, json.dumps(draft), "超时", True)):
+            result = runner.run(view)
+        self.assertFalse(result.investigation_updated)
+        self.assertEqual(json.loads((view.case_dir / "investigation.json").read_text(encoding="utf-8")), saved)
 
     def test_codex_runner_extracts_a_readable_error(self) -> None:
         detail = '\n'.join(

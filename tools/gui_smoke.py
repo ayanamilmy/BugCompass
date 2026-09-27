@@ -347,6 +347,10 @@ def main() -> int:
             app._ask_question()
             app._poll_events()
         check("当前追问只传入历史对话", all(item.get("content") != "本次问题" for item in captured_history))
+        from bugcompass.codex_runner import CodexRunResult
+        app._finish_codex_run(view, CodexRunResult(-15, False, "", "", True, True))
+        app._poll_events()
+        check("超时前已保存的调查结果可见", "超时前" in app.result_hint_var.get())
 
         # 3) 滚动容器：内容应可滚动且 scrollregion 为整数
         scroll = app.cards_scroll
