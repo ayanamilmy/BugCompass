@@ -148,6 +148,20 @@ class GuiControllerTests(unittest.TestCase):
         self.assertEqual(first.path, second.path)
         self.assertEqual((self.workspace / "project.json").read_text(encoding="utf-8"), original)
 
+    def test_existing_empty_workspace_is_initialized(self) -> None:
+        self.workspace.mkdir()
+        created = self.controller.ensure_workspace(self.repo)
+        self.assertEqual(created.path, self.workspace)
+        self.assertTrue((self.workspace / "project.json").is_file())
+
+    def test_nonempty_invalid_workspace_is_not_overwritten(self) -> None:
+        self.workspace.mkdir()
+        marker = self.workspace / "keep.txt"
+        marker.write_text("mine", encoding="utf-8")
+        with self.assertRaises(BugCompassError):
+            self.controller.ensure_workspace(self.repo)
+        self.assertEqual(marker.read_text(encoding="utf-8"), "mine")
+
     def test_mismatched_workspace_is_not_overwritten(self) -> None:
         self.controller.ensure_workspace(self.repo)
         original = (self.workspace / "project.json").read_bytes()
@@ -371,6 +385,7 @@ class GuiControllerTests(unittest.TestCase):
         self.assertEqual(command[:2], ["/fake/codex", "exec"])
         self.assertIn("workspace-write", command)
         self.assertIn("--ignore-user-config", command)
+        self.assertIn("--skip-git-repo-check", command)
         self.assertEqual(command[command.index("--model") + 1], "gpt-5.6-terra")
         self.assertIn('model_reasoning_effort="low"', command)
         self.assertIn("--output-schema", command)
@@ -383,6 +398,8 @@ class GuiControllerTests(unittest.TestCase):
         self.assertIn(str(view.repo_path), prompt)
         self.assertIn("只允许修改当前案件目录", prompt)
         self.assertIn("不要修改 Blender 源码", prompt)
+        self.assertIn("完整读取函数体", prompt)
+        self.assertIn("本轮可以只读核实", prompt)
 
         continue_prompt = runner.build_command(view, action="continue")[-1]
         self.assertIn("继续调查当前案件", continue_prompt)

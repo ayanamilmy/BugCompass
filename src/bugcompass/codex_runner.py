@@ -90,6 +90,7 @@ class CodexRunner:
             self.executable,
             "exec",
             "--ignore-user-config",
+            "--skip-git-repo-check",
             "--model",
             self.model,
             "--config",
@@ -133,6 +134,10 @@ class CodexRunner:
             "不要修改 Blender 源码，不运行 Blender、不构建、不执行 Bug 报告中的命令或附件，也不访问网络。"
             "所有事实和源码结论附相对路径与行号；事实用 fact，推测用 inference，未知写入 unknowns。"
             "本轮最多执行 8 组只读命令；优先精确搜索和小范围读取，不做无边界源码遍历。"
+            "先定位最相关的函数，完整读取函数体以及直接调用的 API 声明或实现，再形成三条路径。"
+            "涉及缓冲区容量时，逐一核对实际分配大小、传入容量与被调函数的写入边界。"
+            "每组搜索尽量少于 100 行；匹配太多就收窄目录和符号，避免大量无关输出挤掉关键源码。"
+            "本轮可以只读核实的源码问题必须现在核实，不要留给用户作为 unknown 或建议实验。"
             "在证据不足时写入 unknowns，不要为了追求完整而持续扩大搜索。"
         )
 
@@ -149,6 +154,7 @@ class CodexRunner:
             self.executable,
             "exec",
             "--ignore-user-config",
+            "--skip-git-repo-check",
             "--model",
             self.model,
             "--config",

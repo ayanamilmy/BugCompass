@@ -97,7 +97,7 @@ class GuiController:
 
     def ensure_workspace(self, repo_path: str | Path) -> Workspace:
         repo = Path(repo_path).expanduser().resolve()
-        if not self.workspace_path.exists():
+        if not self.workspace_path.exists() or (self.workspace_path.is_dir() and not any(self.workspace_path.iterdir())):
             return init_workspace(self.workspace_path, repo)
 
         workspace = load_workspace(self.workspace_path)

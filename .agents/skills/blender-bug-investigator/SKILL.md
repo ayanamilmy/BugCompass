@@ -35,6 +35,8 @@ python -m bugcompass doctor --workspace <workspace>
 - 优先使用 `rg` 搜索符号、字符串和调用点；使用 `git log`、`git show`、`git blame` 等只读历史命令追溯依据。
 - 不访问网络。不要把初始 Pack 当作完整知识或源码证据。
 - 对代码位置尽量记录仓库相对路径、符号和行号；对 Git 结论记录 commit ID 或所用历史范围。找不到证据时明确写“未知”，不要补造。
+- 先从报告中的线索定位少数候选函数，完整读取最相关的函数体及其直接调用的 API 声明或实现，再写判断。涉及越界或截断时，核对实际缓冲区、传入容量和被调函数的写入边界；不能只读到函数开头便将相邻代码列为未知。
+- 搜索应限定目录、符号和输出行数。若一次搜索返回大量无关匹配，立即缩小范围；不要把宽泛搜索的长输出当作完成源码检查。当前就能只读核实的事实应在本轮核实，不能作为实验推给用户。
 
 ### 历史练习边界
 
@@ -55,7 +57,7 @@ python -m bugcompass doctor --workspace <workspace>
 
 `evidence` 中每项明确标记 `fact` 或 `inference`，并记录来源类型和源码引用。`unknowns` 单独记录未知信息。
 
-`suggested_experiments` 必须提供目的、操作说明、无 shell 的命令参数数组、工作目录、预计秒数和权限。只读搜索/读取/Git 历史为 `green`；构建、测试或启动 Blender 为 `yellow`；修改源码、删除文件或 push 为 `red`。不得故意低报权限。命令不得包含 shell 拼接、重定向、管道、绝对路径或 `..`。优先提出最低权限、最低成本实验。
+`suggested_experiments` 只列本轮静态调查无法完成、且确实有助于区分路径的后续验证；没有合适实验时可以为空。每项必须提供目的、操作说明、无 shell 的命令参数数组、工作目录、预计秒数和权限。只读搜索/读取/Git 历史为 `green`；构建、测试或启动 Blender 为 `yellow`；修改源码、删除文件或 push 为 `red`。不得故意低报权限。命令不得包含 shell 拼接、重定向、管道、绝对路径或 `..`。优先提出最低权限、最低成本实验。
 
 继续实验调查时，读取 `experiments/<run-id>/result.json` 以及其引用的 stdout/stderr，根据真实返回码和输出设置实验 `effect`（`supports`、`weakens` 或 `inconclusive`）、结果摘要与 `latest_run`，并更新原有假设；不要重新执行命令，也不要丢弃用户否定状态。
 
